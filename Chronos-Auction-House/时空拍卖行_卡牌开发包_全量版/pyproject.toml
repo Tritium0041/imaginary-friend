@@ -1,0 +1,10 @@
+[project]
+name = "card-engine"
+version = "0.1.0"
+dependencies = [
+    "reportlab"
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
