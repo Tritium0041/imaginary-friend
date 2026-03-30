@@ -81,8 +81,8 @@ board_game_agent/
 ## 技术架构
 
 - **后端**: Python + FastAPI + Claude API
-- **前端**: HTML + Tailwind CSS
-- **通信**: WebSocket 实时推送
+- **前端**: 原生 HTML/CSS/ES Modules（工程化拆分到 `src/api/static/`）
+- **通信**: WebSocket 实时流式推送（GM 消息分片渲染 + HTTP 降级）
 - **状态管理**: 内存字典
 
 ## 开发计划

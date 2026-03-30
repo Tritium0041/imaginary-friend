@@ -1,0 +1,266 @@
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --panel: #171e33;
+  --panel-soft: #1f2944;
+  --text: #e8ecff;
+  --text-soft: #9caad6;
+  --accent: #f2b44a;
+  --accent-soft: #ffc766;
+  --danger: #ff7a7a;
+  --ok: #7dd58c;
+  --border: #2a3554;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: radial-gradient(circle at 20% 0%, #18233f, var(--bg) 44%);
+  color: var(--text);
+}
+
+.app-shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.topbar h1 {
+  margin: 0;
+  color: var(--accent);
+  letter-spacing: 0.4px;
+}
+
+.topbar p {
+  margin: 6px 0 0;
+  color: var(--text-soft);
+  font-size: 14px;
+}
+
+.status-row {
+  display: flex;
+  gap: 8px;
+}
+
+.panel {
+  background: linear-gradient(180deg, var(--panel) 0%, #141b30 100%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+.panel h2 {
+  margin: 0 0 12px;
+  font-size: 17px;
+  color: var(--accent-soft);
+}
+
+.panel-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.grid {
+  display: grid;
+  gap: 12px;
+}
+
+.two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.game-grid {
+  grid-template-columns: minmax(260px, 1fr) minmax(380px, 1.4fr);
+}
+
+label span {
+  display: block;
+  color: var(--text-soft);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+input,
+select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
+  padding: 10px;
+  font-size: 14px;
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid #4e73ff;
+  outline-offset: 0;
+}
+
+.btn-primary {
+  margin-top: 12px;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffc766, #f0ac3f);
+  color: #211200;
+  font-weight: 700;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+.btn-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.error-text {
+  color: var(--danger);
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.kv-list > div {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.kv-list > div:last-child {
+  border-bottom: none;
+}
+
+.kv-list span {
+  color: var(--text-soft);
+}
+
+.stack-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.player-card {
+  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.player-card.current {
+  border-color: #f8cf77;
+  box-shadow: 0 0 0 1px #f8cf77 inset;
+}
+
+.player-card .meta {
+  margin-top: 5px;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.chat-box {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #0d1324;
+  min-height: 340px;
+  max-height: 52vh;
+  overflow-y: auto;
+  padding: 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  line-height: 1.42;
+}
+
+.message {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.message.user {
+  color: #8eb6ff;
+}
+
+.message.error {
+  color: var(--danger);
+}
+
+.message.gm {
+  color: #d9e3ff;
+}
+
+.action-row {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+}
+
+.auction-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+.auction-item,
+.empty-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: var(--panel-soft);
+}
+
+.auction-item .title {
+  color: #ffe29f;
+  font-weight: 700;
+}
+
+.auction-item .meta {
+  color: var(--text-soft);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  padding: 4px 9px;
+  font-size: 12px;
+  color: var(--text-soft);
+  background: #18213b;
+}
+
+.badge-offline {
+  color: #ffd6d6;
+}
+
+.badge-online {
+  color: var(--ok);
+}
+
+@media (max-width: 920px) {
+  .two-col,
+  .game-grid {
+    grid-template-columns: 1fr;
+  }
+}
