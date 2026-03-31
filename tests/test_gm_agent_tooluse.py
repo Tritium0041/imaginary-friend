@@ -151,3 +151,40 @@ def test_tool_use_roundtrip_sends_structured_assistant_content(monkeypatch):
     assert tool_result_payload["role"] == "user"
     assert isinstance(tool_result_payload["content"], list)
     assert tool_result_payload["content"][0]["type"] == "tool_result"
+
+
+def test_ai_player_action_emits_structured_ai_message(monkeypatch):
+    agent, _client = _build_agent(monkeypatch, responses=[])
+    outputs: list[object] = []
+    agent.on_output = outputs.append
+
+    class _FakePlayer:
+        id = "player_1"
+        name = "AI玩家1"
+        is_human = False
+
+    class _FakePlayerAgent:
+        def decide(self, context, _state):
+            return {"action": {"type": "pass"}, "message": f"AI 决策: {context}"}
+
+    class _FakeGameMgr:
+        def __init__(self):
+            self.game_state = self
+
+        def get_player(self, player_id):
+            if player_id == "player_1":
+                return _FakePlayer()
+            return None
+
+        def get_game_state(self):
+            return {"players": {}}
+
+    agent.game_mgr = _FakeGameMgr()
+    agent.session.player_agents["player_1"] = _FakePlayerAgent()
+
+    result = agent._handle_player_action_request("player_1", "bid", "请出价")
+    assert result["player_id"] == "player_1"
+    assert any(isinstance(x, dict) and x.get("type") == "ai_message" for x in outputs)
+    payload = next(x for x in outputs if isinstance(x, dict) and x.get("type") == "ai_message")
+    assert payload["player_name"] == "AI玩家1"
+    assert "AI 决策" in payload["content"]

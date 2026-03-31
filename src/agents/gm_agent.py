@@ -56,7 +56,7 @@ class GMAgent:
         self, 
         config: Optional[GMConfig] = None,
         game_mgr: Optional[GameManager] = None,
-        on_output: Optional[Callable[[str], None]] = None,
+        on_output: Optional[Callable[[str | dict[str, Any]], None]] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
     ):
@@ -78,6 +78,20 @@ class GMAgent:
         
         # 工具定义
         self.tools = self._define_tools()
+
+    def _emit_text(self, text: str):
+        """发出普通文本消息。"""
+        self.on_output(text)
+
+    def _emit_ai_message(self, player_id: str, player_name: str, message: str):
+        """发出带 AI 标签的结构化消息。"""
+        payload = {
+            "type": "ai_message",
+            "player_id": player_id,
+            "player_name": player_name,
+            "content": message,
+        }
+        self.on_output(payload)
     
     def _define_tools(self) -> list[dict]:
         """定义 GM 可用的工具"""
@@ -431,7 +445,7 @@ class GMAgent:
                 args.get("options", [])
             )
         elif name == "broadcast_message":
-            self.on_output(f"\n🎭 【GM播报】{args['message']}\n")
+            self._emit_text(f"\n🎭 【GM播报】{args['message']}\n")
             result = {"success": True}
         else:
             result = {"error": f"未知工具: {name}"}
@@ -461,7 +475,7 @@ class GMAgent:
             # 人类玩家：设置等待状态
             self.session.is_waiting_for_human = True
             self.session.pending_action = action_type
-            self.on_output(f"\n⏳ 等待 {player.name} 行动: {context}\n")
+            self._emit_text(f"\n⏳ 等待 {player.name} 行动: {context}\n")
             return {
                 "waiting": True,
                 "player_id": player_id,
@@ -474,7 +488,11 @@ class GMAgent:
             agent = self.session.player_agents.get(player_id)
             if agent:
                 response = agent.decide(context, self.game_mgr.get_game_state())
-                self.on_output(f"\n🤖 {player.name}: {response['message']}\n")
+                self._emit_ai_message(
+                    player_id=player_id,
+                    player_name=player.name,
+                    message=response["message"],
+                )
                 return {
                     "player_id": player_id,
                     "player_name": player.name,
@@ -495,7 +513,7 @@ class GMAgent:
             for i, opt in enumerate(options, 1):
                 msg += f"  {i}. {opt}\n"
         
-        self.on_output(msg)
+        self._emit_text(msg)
         return {"waiting": True, "question": question, "options": options}
     
     def start_game(
@@ -560,7 +578,7 @@ class GMAgent:
             Message(role="system", content=system_prompt)
         ]
         
-        self.on_output(f"\n🎲 游戏 {game_id} 已创建！\n")
+        self._emit_text(f"\n🎲 游戏 {game_id} 已创建！\n")
         gm_logger.info("Game startup announcement sent")
         
         # 触发 GM 开始游戏
@@ -624,7 +642,7 @@ class GMAgent:
             for block in assistant_content:
                 if block.type == "text":
                     result_text += block.text
-                    self.on_output(block.text)
+                    self._emit_text(block.text)
                 elif block.type == "tool_use":
                     tool_name = block.name
                     tool_input = block.input
@@ -678,7 +696,7 @@ class GMAgent:
         for block in response.content:
             if block.type == "text":
                 result_text += block.text
-                self.on_output(block.text)
+                self._emit_text(block.text)
         
         final_content = self._serialize_assistant_content(response.content)
         self.session.messages.append(

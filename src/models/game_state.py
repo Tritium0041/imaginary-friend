@@ -195,6 +195,17 @@ class GameState(BaseModel):
                     "money": p.money,
                     "victory_points": p.victory_points,
                     "artifact_count": len(p.artifacts),
+                    "artifacts": [
+                        {
+                            "id": a.id,
+                            "name": a.name,
+                            "era": a.era.value,
+                            "rarity": a.rarity.value,
+                            "base_value": a.base_value,
+                            "time_cost": a.time_cost,
+                        }
+                        for a in p.artifacts
+                    ],
                     "card_count": len(p.function_cards),
                 }
                 for pid, p in self.players.items()

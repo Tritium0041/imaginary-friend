@@ -36,6 +36,9 @@ def test_get_state():
     assert state["current_round"] == 1
     assert len(state["event_area"]) == 2
     assert state["function_deck_count"] == 18
+    sample_player = next(iter(state["players"].values()))
+    assert "artifacts" in sample_player
+    assert isinstance(sample_player["artifacts"], list)
     print("✓ 状态获取测试通过")
 
 

@@ -127,6 +127,23 @@ manager = ConnectionManager()
 logger = logging.getLogger(__name__)
 
 
+def _normalize_output_message(message: str | dict[str, Any]) -> dict[str, Any]:
+    """统一输出消息格式，供 HTTP 与 WebSocket 共用。"""
+    if isinstance(message, dict):
+        message_type = str(message.get("type", ""))
+        if message_type == "ai_message":
+            return {
+                "kind": "ai",
+                "player_id": message.get("player_id"),
+                "player_name": message.get("player_name"),
+                "content": str(message.get("content", "")),
+            }
+        if message_type == "error":
+            return {"kind": "error", "content": str(message.get("content", ""))}
+        return {"kind": "gm", "content": str(message.get("content", ""))}
+    return {"kind": "gm", "content": str(message)}
+
+
 def _build_progress_event(
     *,
     scope: str,
@@ -216,7 +233,7 @@ def _normalize_action(raw_action: str) -> str:
 
 async def _run_gm_action(runtime: GameRuntime, action: str) -> dict[str, Any]:
     """串行执行 GM 行动，并持续推送流式消息。"""
-    streamed_messages: list[str] = []
+    streamed_messages: list[dict[str, Any]] = []
     progress_events: list[dict[str, Any]] = []
     action_id = uuid.uuid4().hex[:8]
     action_logger = bind_context(
@@ -261,18 +278,19 @@ async def _run_gm_action(runtime: GameRuntime, action: str) -> dict[str, Any]:
         emit_progress("processing", "GM 正在处理行动", percent=30, indeterminate=True)
         chunk_started = False
 
-        def collect_output(message: str):
+        def collect_output(message: str | dict[str, Any]):
             nonlocal chunk_started
-            text = str(message) if message is not None else ""
-            if not text:
+            normalized = _normalize_output_message(message)
+            content = normalized.get("content", "")
+            if not content:
                 return
             if not chunk_started:
                 chunk_started = True
                 emit_progress("streaming", "正在接收 GM 流式输出", percent=65, indeterminate=True)
-            streamed_messages.append(text)
+            streamed_messages.append(normalized)
             _emit_runtime_event_from_worker(
                 runtime,
-                {"type": "gm_chunk", "content": text},
+                {"type": "gm_chunk", **normalized},
             )
 
         runtime.gm.on_output = collect_output
@@ -532,12 +550,12 @@ async def create_game(request: GameCreateRequest):
         len(players),
         request.model,
     )
-    startup_messages: list[str] = []
+    startup_messages: list[dict[str, Any]] = []
 
-    def collect_output(message: str):
-        text = str(message) if message is not None else ""
-        if text:
-            startup_messages.append(text)
+    def collect_output(message: str | dict[str, Any]):
+        normalized = _normalize_output_message(message)
+        if normalized.get("content"):
+            startup_messages.append(normalized)
 
     record_progress("runtime_preparing", "正在构建游戏运行时", percent=30)
     game_mgr = GameManager()

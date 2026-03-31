@@ -37,10 +37,26 @@ class FakeGMAgent:
             is_waiting_for_human=True,
         )
         self.on_output("fake-startup-message")
+        self.on_output(
+            {
+                "type": "ai_message",
+                "player_id": "player_1",
+                "player_name": "AI玩家1",
+                "content": "### AI 开场发言\n- 准备竞价",
+            }
+        )
         return "ok"
 
     def process(self, action):
         self.on_output(f"fake-action:{action}")
+        self.on_output(
+            {
+                "type": "ai_message",
+                "player_id": "player_2",
+                "player_name": "AI玩家2",
+                "content": f"我回应：`{action}`",
+            }
+        )
         if self.session:
             self.session.is_waiting_for_human = False
         return "ok"
@@ -84,7 +100,11 @@ def test_create_game_returns_progress_events(monkeypatch):
         assert payload["progress_events"]
         assert all(evt["scope"] == "create_game" for evt in payload["progress_events"])
         assert any(evt.get("status") == "completed" and evt.get("percent") == 100 for evt in payload["progress_events"])
-        assert any(msg == "fake-startup-message" for msg in payload["messages"])
+        assert any(msg["kind"] == "gm" and msg["content"] == "fake-startup-message" for msg in payload["messages"])
+        assert any(
+            msg["kind"] == "ai" and msg["player_name"] == "AI玩家1" and "AI 开场发言" in msg["content"]
+            for msg in payload["messages"]
+        )
 
 
 def test_action_returns_progress_events(monkeypatch):
@@ -114,4 +134,35 @@ def test_action_returns_progress_events(monkeypatch):
         assert payload["action_id"]
         assert any(evt["scope"] == "action" for evt in payload["progress_events"])
         assert any(evt.get("status") == "completed" and evt.get("percent") == 100 for evt in payload["progress_events"])
-        assert any("fake-action:我出价 12" in msg for msg in payload["messages"])
+        assert any(
+            msg["kind"] == "gm" and "fake-action:我出价 12" in msg["content"]
+            for msg in payload["messages"]
+        )
+        assert any(
+            msg["kind"] == "ai" and msg["player_id"] == "player_2" and "我回应" in msg["content"]
+            for msg in payload["messages"]
+        )
+
+
+def test_public_state_includes_player_artifacts(monkeypatch):
+    monkeypatch.setattr(server, "GMAgent", FakeGMAgent)
+    server.active_games.clear()
+
+    with TestClient(server.app) as client:
+        create_response = client.post(
+            "/api/games",
+            json={
+                "player_name": "测试玩家",
+                "ai_count": 2,
+                "api_key": "test-key",
+                "base_url": "",
+                "model": "fake-model",
+            },
+        )
+        assert create_response.status_code == 200
+        payload = create_response.json()
+        players = payload["state"]["players"]
+        assert players
+        sample_player = next(iter(players.values()))
+        assert "artifacts" in sample_player
+        assert isinstance(sample_player["artifacts"], list)

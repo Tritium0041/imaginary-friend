@@ -183,6 +183,55 @@ function appendMessage(text, kind = "gm") {
   scheduleFlushMessages();
 }
 
+function escapeHtml(input) {
+  return String(input ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderSafeMarkdown(text) {
+  let html = escapeHtml(text ?? "");
+  html = html.replace(/^###\s+(.+)$/gm, "<h3>$1</h3>");
+  html = html.replace(/^##\s+(.+)$/gm, "<h2>$1</h2>");
+  html = html.replace(/^#\s+(.+)$/gm, "<h1>$1</h1>");
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  html = html.replace(/^- (.+)$/gm, "<li>$1</li>");
+  html = html.replace(/(<li>[\s\S]*<\/li>)/g, "<ul>$1</ul>");
+  html = html.replace(/\n\n+/g, "</p><p>");
+  html = `<p>${html}</p>`;
+  html = html.replace(/<p>\s*<\/p>/g, "");
+  return html;
+}
+
+function normalizeIncomingMessage(payload) {
+  if (typeof payload === "string") {
+    return { kind: "gm", content: payload };
+  }
+  if (!payload || typeof payload !== "object") {
+    return { kind: "gm", content: String(payload ?? "") };
+  }
+  if (payload.kind) {
+    return payload;
+  }
+  return {
+    kind: payload.type === "ai_message" ? "ai" : "gm",
+    content: String(payload.content ?? ""),
+    player_id: payload.player_id,
+    player_name: payload.player_name,
+  };
+}
+
+function appendStructuredMessage(payload) {
+  const normalized = normalizeIncomingMessage(payload);
+  state.messageBuffer.push(normalized);
+  scheduleFlushMessages();
+}
+
 function scheduleFlushMessages() {
   if (state.flushScheduled) return;
   state.flushScheduled = true;
@@ -196,8 +245,23 @@ function flushMessages() {
   const frag = document.createDocumentFragment();
   for (const item of state.messageBuffer.splice(0, state.messageBuffer.length)) {
     const div = document.createElement("div");
-    div.className = `message ${item.kind}`;
-    div.textContent = item.text;
+    const kind = item.kind || "gm";
+    div.className = `message ${kind}`;
+    if (kind === "ai") {
+      div.classList.add("ai-message-card");
+      const title = document.createElement("div");
+      title.className = "ai-message-title";
+      title.textContent = `🤖 ${item.player_name || item.player_id || "AI玩家"}`;
+      const body = document.createElement("div");
+      body.className = "md-body";
+      body.innerHTML = renderSafeMarkdown(item.content || item.text || "");
+      div.append(title, body);
+    } else if (kind === "gm") {
+      div.classList.add("md-body");
+      div.innerHTML = renderSafeMarkdown(item.content || item.text || "");
+    } else {
+      div.textContent = item.content || item.text || "";
+    }
     frag.appendChild(div);
   }
   els.chatBox.appendChild(frag);
@@ -248,7 +312,21 @@ function renderPlayers(players = {}, currentPlayerId = null) {
     const cards = document.createElement("div");
     cards.className = "meta";
     cards.textContent = `文物 ${p.artifact_count ?? 0} · 功能卡 ${p.card_count ?? 0}`;
-    card.append(name, stats, cards);
+    const artifacts = document.createElement("div");
+    artifacts.className = "artifact-list";
+    const items = Array.isArray(p.artifacts) ? p.artifacts : [];
+    if (items.length === 0) {
+      artifacts.innerHTML = '<span class="artifact-chip artifact-empty">暂无文物</span>';
+    } else {
+      for (const a of items) {
+        const chip = document.createElement("span");
+        chip.className = "artifact-chip";
+        const era = translateEra(a.era);
+        chip.textContent = `${a.name} · ${era} · ${a.base_value}`;
+        artifacts.appendChild(chip);
+      }
+    }
+    card.append(name, stats, cards, artifacts);
     frag.appendChild(card);
   }
   els.playersList.innerHTML = "";
@@ -340,7 +418,7 @@ async function startGame() {
     els.gamePanel.classList.remove("hidden");
     renderState(data.state);
     for (const msg of data.messages || []) {
-      appendMessage(msg, "gm");
+      appendStructuredMessage(msg);
     }
     connectWebSocket();
   } catch (err) {
@@ -402,7 +480,7 @@ function connectWebSocket() {
       return;
     }
     if (data.type === "gm_chunk") {
-      appendMessage(data.content || "", "gm");
+      appendStructuredMessage(data);
       return;
     }
     if (data.type === "state_update") {
@@ -477,7 +555,7 @@ async function sendAction(actionText) {
     if (!res.ok) throw new Error(data.detail || "发送失败");
     for (const event of data.progress_events || []) handleProgressEvent(event);
     for (const msg of data.messages || []) {
-      appendMessage(msg, "gm");
+      appendStructuredMessage(msg);
     }
     renderState(data.state);
     scheduleHideProgress(progressTargets.action, "actionHideTimer");
