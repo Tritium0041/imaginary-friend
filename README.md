@@ -1,10 +1,11 @@
-# 时空拍卖行 (Chronos Auction House)
+# imaginary-friend for Chronos Auction House
 
-一个由 AI 驱动的单人桌游体验系统。
+一个用于 **Chronos Auction House（时空拍卖行）** 的 AI 桌游测试 Agent 系统：可用于规则验证、回合演练和体验打磨。
 
 ## 功能特性
 
 - 🎮 单人对战 2-4 个 AI 对手
+- 🧪 面向桌游测试：快速复现对局、验证规则边界
 - 🤖 AI 由 Claude 大语言模型驱动
 - 🎭 GM Agent 自动主持游戏流程
 - 💬 自然语言交互
