@@ -34,7 +34,7 @@ class GMConfig:
 class Message:
     """消息"""
     role: str  # "user", "assistant", "system"
-    content: str
+    content: str | list[dict[str, Any]]
     name: Optional[str] = None  # 发言者名称
 
 
@@ -311,6 +311,39 @@ class GMAgent:
                 }
             }
         ]
+
+    def _serialize_assistant_content(self, content_blocks: list[Any]) -> list[dict[str, Any]]:
+        """将 SDK block 序列化为 Anthropic messages 可回放格式。"""
+        serialized: list[dict[str, Any]] = []
+        for block in content_blocks:
+            block_type = getattr(block, "type", None)
+            if block_type == "text":
+                serialized.append(
+                    {
+                        "type": "text",
+                        "text": getattr(block, "text", ""),
+                    }
+                )
+                continue
+            if block_type == "tool_use":
+                serialized.append(
+                    {
+                        "type": "tool_use",
+                        "id": getattr(block, "id", ""),
+                        "name": getattr(block, "name", ""),
+                        "input": getattr(block, "input", {}),
+                    }
+                )
+                continue
+
+            if hasattr(block, "model_dump"):
+                serialized.append(block.model_dump())  # type: ignore[call-arg]
+                continue
+            if isinstance(block, dict):
+                serialized.append(block)
+                continue
+            serialized.append({"type": "text", "text": str(block)})
+        return serialized
     
     def _execute_tool(self, name: str, args: dict) -> Any:
         """执行工具调用"""
@@ -586,6 +619,7 @@ class GMAgent:
             # 处理工具调用
             tool_results = []
             assistant_content = response.content
+            assistant_content_serialized = self._serialize_assistant_content(assistant_content)
             
             for block in assistant_content:
                 if block.type == "text":
@@ -608,13 +642,13 @@ class GMAgent:
                     if isinstance(tool_result, dict) and tool_result.get("waiting"):
                         gm_logger.info("GM waiting for human input")
                         self.session.messages.append(
-                            Message(role="assistant", content=str(assistant_content))
+                            Message(role="assistant", content=assistant_content_serialized)
                         )
                         return result_text
             
             # 添加助手消息和工具结果
             self.session.messages.append(
-                Message(role="assistant", content=str(assistant_content))
+                Message(role="assistant", content=assistant_content_serialized)
             )
             
             # 继续对话
@@ -646,8 +680,9 @@ class GMAgent:
                 result_text += block.text
                 self.on_output(block.text)
         
+        final_content = self._serialize_assistant_content(response.content)
         self.session.messages.append(
-            Message(role="assistant", content=result_text)
+            Message(role="assistant", content=final_content if final_content else result_text)
         )
         gm_logger.info("GM response processing completed")
         
