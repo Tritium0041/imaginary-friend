@@ -37,6 +37,19 @@ python run_server.py
 # 访问 http://localhost:8000/play
 ```
 
+## 日志与进度条
+
+- 日志：
+  - 默认同时输出到控制台与 `logs/app.log`
+  - 可通过环境变量调整：
+    - `LOG_LEVEL`（默认 `INFO`）
+    - `LOG_FILE`（默认 `logs/app.log`）
+
+- Web 端加载进度条（仅游戏内异步流程）：
+  - 创建游戏（`/api/games`）
+  - 执行动作（WebSocket / HTTP fallback）
+  - WebSocket 断线重连
+
 ## 项目结构
 
 ```

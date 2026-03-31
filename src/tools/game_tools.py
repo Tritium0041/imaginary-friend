@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 import uuid
 import random
@@ -25,6 +26,9 @@ from ..data import (
     get_shuffled_function_deck,
     get_shuffled_event_deck,
 )
+from ..utils import bind_context
+
+logger = logging.getLogger(__name__)
 
 
 class GameManager:
@@ -32,6 +36,7 @@ class GameManager:
     
     def __init__(self):
         self.game_state: Optional[GameState] = None
+        logger.info("GameManager initialized")
 
     def _ensure_game(self) -> tuple[Optional[GameState], Optional[GlobalState], Optional[dict]]:
         if self.game_state is None:
@@ -83,6 +88,13 @@ class GameManager:
         """
         if game_id is None:
             game_id = str(uuid.uuid4())[:8]
+        game_logger = bind_context(logger, game_id=game_id)
+        game_logger.info(
+            "Initializing game (players=%s, max_rounds=%s, initial_money=%s)",
+            len(player_names or []),
+            max_rounds,
+            initial_money,
+        )
         
         if player_names is None:
             player_names = [("玩家", True)]
@@ -112,12 +124,14 @@ class GameManager:
 
         global_state.turn_order = turn_order
         self.game_state = GameState(global_state=global_state, players=players)
+        game_logger.info("Global state and players created")
 
         # 每位玩家发2张功能卡
         initial_dealt_cards = 0
         for player_id in turn_order:
             draw_result = self.draw_function_cards(player_id=player_id, count=2)
             if "error" in draw_result:
+                game_logger.error("Initial function draw failed: %s", draw_result["error"])
                 return draw_result
             initial_dealt_cards += draw_result["drawn_count"]
 
@@ -125,12 +139,14 @@ class GameManager:
         target_pool_size = len(players) + 1
         refill_result = self.refill_auction_pool(target_size=target_pool_size)
         if "error" in refill_result:
+            game_logger.error("Initial auction refill failed: %s", refill_result["error"])
             return refill_result
 
         # 事件区初始翻开2张事件卡
         for _ in range(2):
             draw_event_result = self.draw_event_to_area()
             if "error" in draw_event_result:
+                game_logger.error("Initial event draw failed: %s", draw_event_result["error"])
                 return draw_event_result
 
         self.game_state.add_log(
@@ -139,6 +155,7 @@ class GameManager:
             f"拍卖区 {len(self.game_state.global_state.auction_pool)} 件；"
             f"事件区 {len(self.game_state.global_state.event_area)} 张"
         )
+        game_logger.info("Game initialized successfully")
 
         return {
             "success": True,
@@ -193,6 +210,7 @@ class GameManager:
         if error:
             return error
         assert game_state is not None and gs is not None
+        game_logger = bind_context(logger, game_id=gs.game_id)
 
         if count <= 0:
             return {"error": "抽卡数量必须大于0"}
@@ -209,10 +227,12 @@ class GameManager:
             drawn_cards.append(gs.card_deck.pop(0))
 
         if not drawn_cards:
+            game_logger.warning("Function draw failed: deck empty")
             return {"error": "功能卡牌库为空，无法抽牌"}
 
         player.function_cards.extend(drawn_cards)
         game_state.add_log(f"{player.name} 抽取功能卡 {len(drawn_cards)} 张")
+        game_logger.info("Function cards drawn for %s: %s", player_id, len(drawn_cards))
 
         return {
             "success": True,
@@ -228,6 +248,7 @@ class GameManager:
         if error:
             return error
         assert game_state is not None and gs is not None
+        game_logger = bind_context(logger, game_id=gs.game_id)
 
         if target_size is None:
             target_size = len(game_state.players) + 1
@@ -253,6 +274,12 @@ class GameManager:
             game_state.add_log(
                 f"补充拍卖区 {len(added)} 件文物（当前 {len(gs.auction_pool)}/{effective_target}）"
             )
+            game_logger.info(
+                "Auction pool refilled: added=%s current=%s target=%s",
+                len(added),
+                len(gs.auction_pool),
+                effective_target,
+            )
 
         return {
             "success": True,
@@ -270,6 +297,7 @@ class GameManager:
         if error:
             return error
         assert game_state is not None and gs is not None
+        game_logger = bind_context(logger, game_id=gs.game_id)
 
         if max_area_size <= 0:
             return {"error": "事件区容量必须大于0"}
@@ -278,11 +306,13 @@ class GameManager:
 
         self._reshuffle_event_discard_if_needed()
         if not gs.event_deck:
+            game_logger.warning("Event draw failed: deck empty")
             return {"error": "事件卡牌库为空，无法补充事件区"}
 
         event_card = gs.event_deck.pop(0)
         gs.event_area.append(event_card)
         game_state.add_log(f"事件区翻开新事件: {event_card.name}")
+        game_logger.info("Event drawn to area: %s", event_card.id)
 
         return {
             "success": True,
@@ -419,9 +449,11 @@ class GameManager:
         if error:
             return error
         assert game_state is not None and gs is not None
+        game_logger = bind_context(logger, game_id=gs.game_id)
 
         event_index = next((i for i, e in enumerate(gs.event_area) if e.id == event_id), None)
         if event_index is None:
+            game_logger.warning("Resolve event failed: missing event %s", event_id)
             return {"error": f"事件区不存在事件 {event_id}"}
 
         event_card = gs.event_area.pop(event_index)
@@ -431,6 +463,7 @@ class GameManager:
         refill_result = None
         if refill_area and len(gs.event_area) < 2:
             refill_result = self.draw_event_to_area()
+        game_logger.info("Event resolved: %s", event_id)
 
         return {
             "success": True,
@@ -454,6 +487,7 @@ class GameManager:
         if error:
             return error
         assert game_state is not None and gs is not None
+        game_logger = bind_context(logger, game_id=gs.game_id)
 
         player = game_state.get_player(player_id)
         if player is None:
@@ -540,6 +574,7 @@ class GameManager:
             changes.append("该功能卡效果需 GM 手动结算")
 
         game_state.add_log(f"{player.name} 使用功能卡 [{card.name}]：{'；'.join(changes)}")
+        game_logger.info("Function card played: %s by %s", card_id, player_id)
 
         return {
             "success": True,

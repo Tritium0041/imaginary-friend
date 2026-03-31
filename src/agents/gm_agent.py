@@ -5,6 +5,7 @@ GM Agent 实现 - 游戏主控
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Optional, Callable, Any
 from dataclasses import dataclass, field
@@ -12,11 +13,13 @@ import anthropic
 
 from ..tools.game_tools import game_manager, GameManager
 from ..models import GamePhase, get_random_identities
+from ..utils import bind_context
 
 
 # 加载规则 Prompt
 RULES_PROMPT_PATH = Path(__file__).parent / "rules_prompt.md"
 RULES_PROMPT = RULES_PROMPT_PATH.read_text(encoding="utf-8") if RULES_PROMPT_PATH.exists() else ""
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -311,30 +314,33 @@ class GMAgent:
     
     def _execute_tool(self, name: str, args: dict) -> Any:
         """执行工具调用"""
+        game_id = self.session.game_id if self.session else None
+        gm_logger = bind_context(logger, game_id=game_id)
+        gm_logger.info("Executing GM tool: %s", name)
         if name == "get_game_state":
-            return self.game_mgr.get_game_state(args.get("include_private", True))
+            result = self.game_mgr.get_game_state(args.get("include_private", True))
         elif name == "update_player_asset":
-            return self.game_mgr.update_player_asset(
+            result = self.game_mgr.update_player_asset(
                 args["player_id"],
                 args.get("money_delta", 0),
                 args.get("vp_delta", 0)
             )
         elif name == "transfer_item":
-            return self.game_mgr.transfer_item(
+            result = self.game_mgr.transfer_item(
                 args["item_type"],
                 args["item_id"],
                 args["from_location"],
                 args["to_location"]
             )
         elif name == "update_global_status":
-            return self.game_mgr.update_global_status(
+            result = self.game_mgr.update_global_status(
                 args.get("stability_delta", 0),
                 args.get("era_multiplier_changes"),
                 args.get("new_phase"),
                 args.get("next_round", False)
             )
         elif name == "add_artifact_to_pool":
-            return self.game_mgr.add_artifact_to_pool(
+            result = self.game_mgr.add_artifact_to_pool(
                 args["artifact_id"],
                 args["name"],
                 args["era"],
@@ -343,26 +349,26 @@ class GMAgent:
                 args.get("description", "")
             )
         elif name == "draw_function_cards":
-            return self.game_mgr.draw_function_cards(
+            result = self.game_mgr.draw_function_cards(
                 args["player_id"],
                 args.get("count", 1),
             )
         elif name == "refill_auction_pool":
-            return self.game_mgr.refill_auction_pool(
+            result = self.game_mgr.refill_auction_pool(
                 args.get("target_size"),
                 args.get("extra_slots", 0),
             )
         elif name == "draw_event_to_area":
-            return self.game_mgr.draw_event_to_area(
+            result = self.game_mgr.draw_event_to_area(
                 args.get("max_area_size", 2),
             )
         elif name == "resolve_event":
-            return self.game_mgr.resolve_event(
+            result = self.game_mgr.resolve_event(
                 args["event_id"],
                 args.get("refill_area", True),
             )
         elif name == "play_function_card":
-            return self.game_mgr.play_function_card(
+            result = self.game_mgr.play_function_card(
                 args["player_id"],
                 args["card_id"],
                 args.get("target_player_id"),
@@ -371,31 +377,41 @@ class GMAgent:
                 args.get("multiplier_delta", 0.5),
             )
         elif name == "record_sealed_bid":
-            return self.game_mgr.record_sealed_bid(
+            result = self.game_mgr.record_sealed_bid(
                 args["player_id"],
                 args["auction_item_id"],
                 args["bid_amount"]
             )
         elif name == "reveal_sealed_bids":
-            return self.game_mgr.reveal_sealed_bids(args["auction_item_id"])
+            result = self.game_mgr.reveal_sealed_bids(args["auction_item_id"])
         elif name == "set_current_player":
-            return self.game_mgr.set_current_player(args["player_id"])
+            result = self.game_mgr.set_current_player(args["player_id"])
         elif name == "request_player_action":
-            return self._handle_player_action_request(
+            result = self._handle_player_action_request(
                 args["player_id"],
                 args["action_type"],
                 args["context"]
             )
         elif name == "ask_human_ruling":
-            return self._handle_human_ruling_request(
+            result = self._handle_human_ruling_request(
                 args["question"],
                 args.get("options", [])
             )
         elif name == "broadcast_message":
             self.on_output(f"\n🎭 【GM播报】{args['message']}\n")
-            return {"success": True}
+            result = {"success": True}
         else:
-            return {"error": f"未知工具: {name}"}
+            result = {"error": f"未知工具: {name}"}
+
+        if isinstance(result, dict) and result.get("error"):
+            gm_logger.warning(
+                "GM tool failed: %s -> %s",
+                name,
+                result.get("error"),
+            )
+        else:
+            gm_logger.info("GM tool completed: %s", name)
+        return result
     
     def _handle_player_action_request(
         self, 
@@ -455,19 +471,24 @@ class GMAgent:
         game_id: Optional[str] = None,
     ) -> str:
         """开始新游戏"""
+        gm_logger = bind_context(logger, game_id=game_id)
+        gm_logger.info("Starting game session")
         # 初始化游戏状态
         result = self.game_mgr.initialize_game(
             game_id=game_id,
             player_names=player_names,
         )
-        
+
         if not result.get("success"):
+            gm_logger.error("Game initialization failed: %s", result.get("error"))
             return f"初始化失败: {result.get('error')}"
         
         game_id = result["game_id"]
         
         # 创建会话
         self.session = GameSession(game_id=game_id)
+        gm_logger = bind_context(logger, game_id=game_id)
+        gm_logger.info("Game session created")
         
         # 为 AI 玩家创建 Agent
         ai_count = sum(1 for _, is_human in player_names if not is_human)
@@ -485,6 +506,7 @@ class GMAgent:
                         base_url=self.base_url,
                     )
                     ai_idx += 1
+            gm_logger.info("Initialized AI player agents: %s", ai_count)
         
         # 构建系统提示
         system_prompt = f"""{RULES_PROMPT}
@@ -506,6 +528,7 @@ class GMAgent:
         ]
         
         self.on_output(f"\n🎲 游戏 {game_id} 已创建！\n")
+        gm_logger.info("Game startup announcement sent")
         
         # 触发 GM 开始游戏
         return self.process(
@@ -517,6 +540,8 @@ class GMAgent:
         """处理用户输入并推进游戏"""
         if not self.session:
             return "游戏尚未开始，请先调用 start_game()"
+        gm_logger = bind_context(logger, game_id=self.session.game_id)
+        gm_logger.info("Processing GM input")
         
         # 如果正在等待人类输入
         if self.session.is_waiting_for_human:
@@ -546,6 +571,7 @@ class GMAgent:
             tools=self.tools,
             messages=messages_for_api,
         )
+        gm_logger.info("Claude response received (stop_reason=%s)", response.stop_reason)
         
         # 处理响应
         return self._process_response(response)
@@ -553,6 +579,8 @@ class GMAgent:
     def _process_response(self, response) -> str:
         """处理 API 响应"""
         result_text = ""
+        game_id = self.session.game_id if self.session else None
+        gm_logger = bind_context(logger, game_id=game_id)
         
         while response.stop_reason == "tool_use":
             # 处理工具调用
@@ -578,6 +606,7 @@ class GMAgent:
                     
                     # 如果需要等待人类输入，暂停循环
                     if isinstance(tool_result, dict) and tool_result.get("waiting"):
+                        gm_logger.info("GM waiting for human input")
                         self.session.messages.append(
                             Message(role="assistant", content=str(assistant_content))
                         )
@@ -609,6 +638,7 @@ class GMAgent:
                 tools=self.tools,
                 messages=messages_for_api,
             )
+            gm_logger.info("Claude follow-up received (stop_reason=%s)", response.stop_reason)
         
         # 最终文本响应
         for block in response.content:
@@ -619,6 +649,7 @@ class GMAgent:
         self.session.messages.append(
             Message(role="assistant", content=result_text)
         )
+        gm_logger.info("GM response processing completed")
         
         return result_text
 

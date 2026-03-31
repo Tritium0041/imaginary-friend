@@ -4,7 +4,9 @@ FastAPI 后端 - WebSocket 实时游戏接口（支持 GM 流式输出）
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from ..agents import GMConfig, GMAgent
 from ..tools import GameManager
+from ..utils import bind_context, setup_logging
 
 
 class GameCreateRequest(BaseModel):
@@ -92,7 +95,10 @@ class ConnectionManager:
             if not active:
                 return
             for ws, exc in stale_connections:
-                print(f"[ws] broadcast failed: {exc}")
+                bind_context(logger, game_id=game_id).warning(
+                    "WebSocket broadcast failed: %s",
+                    exc,
+                )
                 active.discard(ws)
             if not active:
                 self.connections.pop(game_id, None)
@@ -110,11 +116,43 @@ class ConnectionManager:
             try:
                 await ws.close()
             except Exception as exc:  # noqa: PERF203 - 退出时尽力关闭连接
-                print(f"[ws] close failed for {game_id}: {exc}")
+                bind_context(logger, game_id=game_id).warning(
+                    "WebSocket close failed: %s",
+                    exc,
+                )
 
 
 active_games: dict[str, GameRuntime] = {}
 manager = ConnectionManager()
+logger = logging.getLogger(__name__)
+
+
+def _build_progress_event(
+    *,
+    scope: str,
+    stage: str,
+    message: str,
+    percent: Optional[int] = None,
+    indeterminate: bool = False,
+    status: str = "in_progress",
+    game_id: Optional[str] = None,
+    action_id: Optional[str] = None,
+) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "type": "progress",
+        "scope": scope,
+        "stage": stage,
+        "message": message,
+        "indeterminate": indeterminate,
+        "status": status,
+    }
+    if percent is not None:
+        event["percent"] = max(0, min(100, int(percent)))
+    if game_id:
+        event["game_id"] = game_id
+    if action_id:
+        event["action_id"] = action_id
+    return event
 
 
 def _enqueue_runtime_event(runtime: GameRuntime, event: dict[str, Any] | None):
@@ -133,7 +171,9 @@ def _enqueue_runtime_event(runtime: GameRuntime, event: dict[str, Any] | None):
     try:
         runtime.event_queue.put_nowait(event)
     except asyncio.QueueFull:
-        print(f"[stream] queue overflow for game {runtime.game_id}")
+        bind_context(logger, game_id=runtime.game_id).warning(
+            "Stream queue overflow; dropped oldest event",
+        )
 
 
 def _emit_runtime_event_from_worker(runtime: GameRuntime, event: dict[str, Any]):
@@ -141,7 +181,10 @@ def _emit_runtime_event_from_worker(runtime: GameRuntime, event: dict[str, Any])
     try:
         runtime.loop.call_soon_threadsafe(_enqueue_runtime_event, runtime, event)
     except RuntimeError as exc:
-        print(f"[stream] loop closed for {runtime.game_id}: {exc}")
+        bind_context(logger, game_id=runtime.game_id).warning(
+            "Event loop closed while emitting runtime event: %s",
+            exc,
+        )
 
 
 async def _dispatch_runtime_events(game_id: str):
@@ -174,17 +217,58 @@ def _normalize_action(raw_action: str) -> str:
 async def _run_gm_action(runtime: GameRuntime, action: str) -> dict[str, Any]:
     """串行执行 GM 行动，并持续推送流式消息。"""
     streamed_messages: list[str] = []
+    progress_events: list[dict[str, Any]] = []
+    action_id = uuid.uuid4().hex[:8]
+    action_logger = bind_context(
+        logger,
+        game_id=runtime.game_id,
+        action_id=action_id,
+    )
+
+    def emit_progress(
+        stage: str,
+        message: str,
+        *,
+        percent: Optional[int] = None,
+        indeterminate: bool = False,
+        status: str = "in_progress",
+    ):
+        event = _build_progress_event(
+            scope="action",
+            stage=stage,
+            message=message,
+            percent=percent,
+            indeterminate=indeterminate,
+            status=status,
+            game_id=runtime.game_id,
+            action_id=action_id,
+        )
+        progress_events.append(event)
+        _enqueue_runtime_event(runtime, event)
 
     async with runtime.action_lock:
+        action_logger.info("Action execution started: %s", action)
+        emit_progress("received", "已接收行动请求", percent=8)
         _enqueue_runtime_event(
             runtime,
-            {"type": "action_status", "status": "started", "action": action},
+            {
+                "type": "action_status",
+                "status": "started",
+                "action": action,
+                "action_id": action_id,
+            },
         )
+        emit_progress("processing", "GM 正在处理行动", percent=30, indeterminate=True)
+        chunk_started = False
 
         def collect_output(message: str):
+            nonlocal chunk_started
             text = str(message) if message is not None else ""
             if not text:
                 return
+            if not chunk_started:
+                chunk_started = True
+                emit_progress("streaming", "正在接收 GM 流式输出", percent=65, indeterminate=True)
             streamed_messages.append(text)
             _emit_runtime_event_from_worker(
                 runtime,
@@ -195,17 +279,22 @@ async def _run_gm_action(runtime: GameRuntime, action: str) -> dict[str, Any]:
 
         try:
             await asyncio.to_thread(runtime.gm.process, action)
+            action_logger.info("GM process completed")
         except Exception as exc:
+            action_logger.exception("Action execution failed: %s", exc)
+            emit_progress("failed", f"行动执行失败: {exc}", status="error")
             _emit_runtime_event_from_worker(
                 runtime,
                 {
                     "type": "action_status",
                     "status": "error",
                     "error": str(exc),
+                    "action_id": action_id,
                 },
             )
             raise
 
+        emit_progress("sync_state", "正在同步最新状态", percent=90)
         state = runtime.game_mgr.get_game_state()
         is_waiting = runtime.gm.session.is_waiting_for_human if runtime.gm.session else False
         _enqueue_runtime_event(
@@ -218,11 +307,15 @@ async def _run_gm_action(runtime: GameRuntime, action: str) -> dict[str, Any]:
         )
         _enqueue_runtime_event(
             runtime,
-            {"type": "action_status", "status": "completed"},
+            {"type": "action_status", "status": "completed", "action_id": action_id},
         )
+        emit_progress("completed", "行动处理完成", percent=100, status="completed")
+        action_logger.info("Action execution finished successfully")
 
     return {
+        "action_id": action_id,
         "messages": streamed_messages,
+        "progress_events": progress_events,
         "state": state,
         "is_waiting_for_human": is_waiting,
     }
@@ -249,6 +342,15 @@ def _build_html_page() -> str:
         <span id="stream-badge" class="badge">流式空闲</span>
       </div>
     </header>
+    <div id="reconnect-progress-wrap" class="progress-wrap hidden progress-inline">
+      <div class="progress-meta">
+        <span id="reconnect-progress-label">正在连接实时通道...</span>
+        <span id="reconnect-progress-value">处理中</span>
+      </div>
+      <div class="progress-track">
+        <div id="reconnect-progress-bar" class="progress-bar indeterminate"></div>
+      </div>
+    </div>
 
     <section id="setup-panel" class="panel">
       <h2>开始新游戏</h2>
@@ -279,6 +381,15 @@ def _build_html_page() -> str:
         </label>
       </div>
       <button id="start-btn" class="btn-primary">开始游戏</button>
+      <div id="startup-progress-wrap" class="progress-wrap hidden">
+        <div class="progress-meta">
+          <span id="startup-progress-label">正在创建游戏...</span>
+          <span id="startup-progress-value">0%</span>
+        </div>
+        <div class="progress-track">
+          <div id="startup-progress-bar" class="progress-bar"></div>
+        </div>
+      </div>
       <p id="setup-error" class="error-text hidden"></p>
     </section>
 
@@ -305,6 +416,15 @@ def _build_html_page() -> str:
           <span id="action-badge" class="badge">待命</span>
         </div>
         <div id="chat-box" class="chat-box"></div>
+        <div id="action-progress-wrap" class="progress-wrap hidden">
+          <div class="progress-meta">
+            <span id="action-progress-label">等待行动...</span>
+            <span id="action-progress-value">0%</span>
+          </div>
+          <div class="progress-track">
+            <div id="action-progress-bar" class="progress-bar"></div>
+          </div>
+        </div>
         <form id="action-form" class="action-row">
           <input id="action-input" type="text" placeholder="输入你的行动，例如：我出价 24" />
           <button id="send-btn" class="btn-primary" type="submit">发送</button>
@@ -333,6 +453,8 @@ HTML_PAGE = _build_html_page()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    setup_logging()
+    logger.info("API lifespan started")
     yield
 
     for runtime in active_games.values():
@@ -348,6 +470,7 @@ async def lifespan(app: FastAPI):
 
     await manager.close_all()
     active_games.clear()
+    logger.info("API lifespan stopped")
 
 
 app = FastAPI(
@@ -367,6 +490,33 @@ async def root():
 
 @app.post("/api/games")
 async def create_game(request: GameCreateRequest):
+    create_action_id = f"create-{uuid.uuid4().hex[:8]}"
+    flow_logger = bind_context(logger, action_id=create_action_id)
+    progress_events: list[dict[str, Any]] = []
+
+    def record_progress(
+        stage: str,
+        message: str,
+        *,
+        percent: Optional[int] = None,
+        indeterminate: bool = False,
+        status: str = "in_progress",
+        game_id: Optional[str] = None,
+    ):
+        progress_events.append(
+            _build_progress_event(
+                scope="create_game",
+                stage=stage,
+                message=message,
+                percent=percent,
+                indeterminate=indeterminate,
+                status=status,
+                game_id=game_id,
+                action_id=create_action_id,
+            )
+        )
+
+    record_progress("request_received", "已接收创建游戏请求", percent=5)
     api_key = (request.api_key or os.environ.get("ANTHROPIC_API_KEY", "")).strip()
     if not api_key:
         raise HTTPException(status_code=400, detail="请输入 API Key")
@@ -376,6 +526,12 @@ async def create_game(request: GameCreateRequest):
     for i in range(request.ai_count):
         players.append((f"AI玩家{i + 1}", False))
 
+    record_progress("request_validated", "请求参数校验完成", percent=15)
+    flow_logger.info(
+        "Creating game request validated (players=%s, model=%s)",
+        len(players),
+        request.model,
+    )
     startup_messages: list[str] = []
 
     def collect_output(message: str):
@@ -383,6 +539,7 @@ async def create_game(request: GameCreateRequest):
         if text:
             startup_messages.append(text)
 
+    record_progress("runtime_preparing", "正在构建游戏运行时", percent=30)
     game_mgr = GameManager()
     gm = GMAgent(
         config=GMConfig(model=request.model),
@@ -392,15 +549,22 @@ async def create_game(request: GameCreateRequest):
         base_url=request.base_url.strip() or None,
     )
 
+    record_progress("game_initializing", "正在初始化牌局与 GM 会话", percent=55, indeterminate=True)
     try:
         await asyncio.to_thread(gm.start_game, players)
     except Exception as exc:
+        flow_logger.exception("Game creation failed: %s", exc)
+        record_progress("failed", f"创建游戏失败: {exc}", status="error")
         raise HTTPException(status_code=500, detail=f"创建游戏失败: {exc}") from exc
 
     if gm.session is None:
+        flow_logger.error("Game creation failed: session not created")
+        record_progress("failed", "创建游戏失败: GM 会话未创建", status="error")
         raise HTTPException(status_code=500, detail="创建游戏失败: GM 会话未创建")
 
     game_id = gm.session.game_id
+    game_logger = bind_context(logger, game_id=game_id, action_id=create_action_id)
+    record_progress("game_initialized", "牌局初始化完成", percent=78, game_id=game_id)
     loop = asyncio.get_running_loop()
     runtime = GameRuntime(
         game_id=game_id,
@@ -414,15 +578,20 @@ async def create_game(request: GameCreateRequest):
         loop=loop,
     )
     active_games[game_id] = runtime
+    game_logger.info("Game runtime registered")
+    record_progress("runtime_registered", "运行时注册完成", percent=92, game_id=game_id)
     runtime.dispatch_task = asyncio.create_task(
         _dispatch_runtime_events(game_id),
         name=f"dispatch-{game_id}",
     )
+    record_progress("completed", "游戏创建完成", percent=100, status="completed", game_id=game_id)
+    game_logger.info("Game created successfully")
 
     return {
         "game_id": game_id,
         "players": [name for name, _ in players],
         "messages": startup_messages,
+        "progress_events": progress_events,
         "state": runtime.game_mgr.get_game_state(),
         "is_waiting_for_human": gm.session.is_waiting_for_human,
     }
@@ -441,14 +610,18 @@ async def get_game(game_id: str):
 @app.post("/api/games/{game_id}/action")
 async def game_action(game_id: str, request: GameActionRequest):
     runtime = _require_runtime(game_id)
+    action_logger = bind_context(logger, game_id=game_id)
     try:
         action = _normalize_action(request.action)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    action_logger.info("Received HTTP action request: %s", action)
     try:
         result = await _run_gm_action(runtime, action)
     except Exception as exc:
+        action_logger.exception("HTTP action failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"执行行动失败: {exc}") from exc
+    action_logger.info("HTTP action completed")
 
     return {
         "game_id": game_id,
@@ -459,8 +632,10 @@ async def game_action(game_id: str, request: GameActionRequest):
 @app.websocket("/ws/{game_id}")
 async def websocket_endpoint(websocket: WebSocket, game_id: str):
     await manager.connect(game_id, websocket)
+    bind_context(logger, game_id=game_id).info("WebSocket connected")
     runtime = active_games.get(game_id)
     if runtime is None:
+        bind_context(logger, game_id=game_id).warning("WebSocket connected to missing game")
         await websocket.send_json({"type": "error", "error": "游戏不存在"})
         await manager.disconnect(game_id, websocket)
         await websocket.close(code=4404)
@@ -488,10 +663,13 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str):
                 await websocket.send_json({"type": "action_status", "status": "queued"})
 
             try:
+                bind_context(logger, game_id=game_id).info("Received WebSocket action: %s", action)
                 await _run_gm_action(runtime, action)
             except Exception as exc:
+                bind_context(logger, game_id=game_id).exception("WebSocket action failed: %s", exc)
                 await websocket.send_json({"type": "error", "error": f"执行行动失败: {exc}"})
     except WebSocketDisconnect:
+        bind_context(logger, game_id=game_id).info("WebSocket disconnected")
         await manager.disconnect(game_id, websocket)
 
 

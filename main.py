@@ -3,11 +3,13 @@
 """
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Optional
 
 from src.agents import GMAgent
 from src.tools import game_manager
+from src.utils import setup_logging
 
 
 def print_banner():
@@ -51,6 +53,8 @@ def get_player_setup() -> list[tuple[str, bool]]:
 
 def run_game():
     """运行游戏"""
+    setup_logging()
+    logger = logging.getLogger(__name__)
     print_banner()
     
     # 检查 API Key
@@ -65,6 +69,10 @@ def run_game():
     
     print(f"\n游戏玩家: {', '.join(name for name, _ in players)}")
     print("\n正在初始化游戏...")
+    logger.info(
+        "CLI game initialization started",
+        extra={"game_id": "-", "action_id": "cli-start"},
+    )
     
     # 创建 GM
     gm = GMAgent()
@@ -79,6 +87,10 @@ def run_game():
                 # 等待人类输入
                 user_input = input("\n你的行动 > ").strip()
                 if user_input.lower() in ['quit', 'exit', '退出']:
+                    logger.info(
+                        "CLI player requested exit",
+                        extra={"game_id": gm.session.game_id if gm.session else "-", "action_id": "cli-exit"},
+                    )
                     print("\n感谢游玩！再见！")
                     break
                 if user_input.lower() == 'status':
@@ -108,13 +120,26 @@ def run_game():
                 # 让 GM 继续推进游戏
                 continue_input = input("\n[按 Enter 继续，或输入命令] > ").strip()
                 if continue_input.lower() in ['quit', 'exit', '退出']:
+                    logger.info(
+                        "CLI player requested exit",
+                        extra={"game_id": gm.session.game_id if gm.session else "-", "action_id": "cli-exit"},
+                    )
                     print("\n感谢游玩！再见！")
                     break
                 gm.process(continue_input or "继续游戏")
     
     except KeyboardInterrupt:
+        logger.warning(
+            "CLI interrupted by keyboard",
+            extra={"game_id": gm.session.game_id if gm.session else "-", "action_id": "cli-interrupt"},
+        )
         print("\n\n游戏中断。再见！")
     except Exception as e:
+        logger.exception(
+            "CLI game crashed: %s",
+            e,
+            extra={"game_id": gm.session.game_id if gm.session else "-", "action_id": "cli-error"},
+        )
         print(f"\n❌ 发生错误: {e}")
         raise
 
