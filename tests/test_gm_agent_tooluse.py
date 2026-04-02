@@ -188,3 +188,55 @@ def test_ai_player_action_emits_structured_ai_message(monkeypatch):
     payload = next(x for x in outputs if isinstance(x, dict) and x.get("type") == "ai_message")
     assert payload["player_name"] == "AI玩家1"
     assert "AI 决策" in payload["content"]
+
+
+def test_player_agent_decide_tolerates_none_highest_bid(monkeypatch):
+    """回归测试：auction_pool 的 current_highest_bid 为 None 时不应崩溃。"""
+    monkeypatch.setattr(gm_agent_mod.anthropic, "Anthropic", lambda **_kwargs: object())
+
+    class _Identity:
+        @staticmethod
+        def get_system_prompt_addition():
+            return "测试身份"
+
+    agent = gm_agent_mod.PlayerAgent(
+        player_id="player_1",
+        identity=_Identity(),
+    )
+
+    class _FakeTextBlock:
+        type = "text"
+        text = "我放弃"
+
+    class _FakeResp:
+        content = [_FakeTextBlock()]
+
+    class _FakeMessages:
+        @staticmethod
+        def create(**_kwargs):
+            return _FakeResp()
+
+    class _FakeClient:
+        messages = _FakeMessages()
+
+    agent.client = _FakeClient()
+
+    game_state = {
+        "current_round": 1,
+        "current_phase": "auction",
+        "players": {
+            "player_1": {"money": 20, "victory_points": 0, "artifacts": [], "function_cards": []},
+            "player_2": {"money": 20, "victory_points": 0, "artifacts": [], "function_cards": []},
+        },
+        "auction_pool": [
+            {
+                "artifact": {"id": "anc_01", "name": "测试文物", "era": "ancient", "base_value": 10},
+                "current_highest_bid": None,
+                "current_highest_bidder": None,
+            }
+        ],
+    }
+
+    result = agent.decide("请决定是否出价", game_state)
+    assert result["player_id"] == "player_1"
+    assert result["action"] == {"type": "pass"}

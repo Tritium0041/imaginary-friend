@@ -100,6 +100,13 @@ def test_create_game_returns_progress_events(monkeypatch):
         assert payload["progress_events"]
         assert all(evt["scope"] == "create_game" for evt in payload["progress_events"])
         assert any(evt.get("status") == "completed" and evt.get("percent") == 100 for evt in payload["progress_events"])
+        assert "context_metrics" in payload["state"]
+        assert set(payload["state"]["context_metrics"].keys()) >= {
+            "message_count",
+            "estimated_chars",
+            "estimated_tokens",
+            "max_response_tokens",
+        }
         assert any(msg["kind"] == "gm" and msg["content"] == "fake-startup-message" for msg in payload["messages"])
         assert any(
             msg["kind"] == "ai" and msg["player_name"] == "AI玩家1" and "AI 开场发言" in msg["content"]
@@ -134,6 +141,8 @@ def test_action_returns_progress_events(monkeypatch):
         assert payload["action_id"]
         assert any(evt["scope"] == "action" for evt in payload["progress_events"])
         assert any(evt.get("status") == "completed" and evt.get("percent") == 100 for evt in payload["progress_events"])
+        assert "context_metrics" in payload["state"]
+        assert payload["state"]["context_metrics"]["estimated_tokens"] >= 0
         assert any(
             msg["kind"] == "gm" and "fake-action:我出价 12" in msg["content"]
             for msg in payload["messages"]

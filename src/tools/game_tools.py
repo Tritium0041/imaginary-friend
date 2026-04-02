@@ -9,6 +9,7 @@ from typing import Optional
 import uuid
 import random
 import math
+import re
 from ..models import (
     Era,
     GamePhase,
@@ -66,6 +67,69 @@ class GameManager:
         random.shuffle(gs.event_deck)
         gs.event_discard_pile.clear()
         self.game_state.add_log("事件卡弃牌堆已洗回牌库")
+
+    @staticmethod
+    def _normalize_lookup_text(value: str) -> str:
+        return value.strip().lower()
+
+    def _resolve_auction_item_reference(
+        self,
+        item_ref: str,
+    ) -> tuple[int | None, AuctionItem | None]:
+        """解析拍卖区物品引用，支持真实ID、位置别名与名称匹配。"""
+        assert self.game_state is not None
+        pool = self.game_state.global_state.auction_pool
+        normalized_ref = self._normalize_lookup_text(item_ref)
+        if not normalized_ref:
+            return None, None
+
+        for idx, auction_item in enumerate(pool):
+            if self._normalize_lookup_text(auction_item.artifact.id) == normalized_ref:
+                return idx, auction_item
+
+        alias_patterns = (
+            r"(?:artifact|item|auction(?:_item)?)?[_\-\s#]*([1-9]\d*)",
+            r"文物[_\-\s#]*([1-9]\d*)",
+            r"第\s*([1-9]\d*)\s*(?:件|号|個|个)?",
+        )
+        for pattern in alias_patterns:
+            matched = re.fullmatch(pattern, normalized_ref)
+            if not matched:
+                continue
+            index = int(matched.group(1)) - 1
+            if 0 <= index < len(pool):
+                return index, pool[index]
+            return None, None
+
+        exact_name_matches = [
+            (idx, auction_item)
+            for idx, auction_item in enumerate(pool)
+            if self._normalize_lookup_text(auction_item.artifact.name) == normalized_ref
+        ]
+        if len(exact_name_matches) == 1:
+            return exact_name_matches[0]
+
+        partial_name_matches = [
+            (idx, auction_item)
+            for idx, auction_item in enumerate(pool)
+            if normalized_ref in self._normalize_lookup_text(auction_item.artifact.name)
+            or self._normalize_lookup_text(auction_item.artifact.name) in normalized_ref
+        ]
+        if len(partial_name_matches) == 1:
+            return partial_name_matches[0]
+
+        return None, None
+
+    def _list_auction_pool_brief(self) -> list[dict[str, str]]:
+        assert self.game_state is not None
+        return [
+            {
+                "id": auction_item.artifact.id,
+                "name": auction_item.artifact.name,
+                "alias": f"artifact_{idx + 1}",
+            }
+            for idx, auction_item in enumerate(self.game_state.global_state.auction_pool)
+        ]
     
     def initialize_game(
         self, 
@@ -654,6 +718,8 @@ class GameManager:
         
         # 查找物品
         item = None
+        requested_item_id = item_id
+        resolved_item_id = item_id
         
         if item_type == "artifact":
             # 从来源获取文物
@@ -673,10 +739,10 @@ class GameManager:
                         item = self.game_state.global_state.system_warehouse.pop(i)
                         break
             elif from_location == "auction_pool":
-                for i, ai in enumerate(self.game_state.global_state.auction_pool):
-                    if ai.artifact.id == item_id:
-                        item = self.game_state.global_state.auction_pool.pop(i).artifact
-                        break
+                index, auction_item = self._resolve_auction_item_reference(item_id)
+                if index is not None and auction_item is not None:
+                    item = self.game_state.global_state.auction_pool.pop(index).artifact
+                    resolved_item_id = item.id
             elif from_location in self.game_state.players:
                 player = self.game_state.players[from_location]
                 for i, a in enumerate(player.artifacts):
@@ -685,6 +751,11 @@ class GameManager:
                         break
             
             if item is None:
+                if from_location == "auction_pool":
+                    return {
+                        "error": f"未找到文物 {item_id} 在 {from_location}",
+                        "available_auction_items": self._list_auction_pool_brief(),
+                    }
                 return {"error": f"未找到文物 {item_id} 在 {from_location}"}
             
             # 放入目标位置
@@ -735,13 +806,16 @@ class GameManager:
                 return {"error": f"无效的目标位置 {to_location}"}
         else:
             return {"error": f"无效的物品类型 {item_type}"}
+
+        resolved_item_id = item.id
         
         self.game_state.add_log(f"物品转移: {item.name} 从 {from_location} 到 {to_location}")
         
         return {
             "success": True,
             "item_type": item_type,
-            "item_id": item_id,
+            "item_id": resolved_item_id,
+            "requested_item_id": requested_item_id,
             "item_name": item.name,
             "from": from_location,
             "to": to_location,
@@ -849,14 +923,13 @@ class GameManager:
             return {"error": "出价不能为负数"}
         
         # 找到拍卖物品
-        auction_item = None
-        for ai in self.game_state.global_state.auction_pool:
-            if ai.artifact.id == auction_item_id:
-                auction_item = ai
-                break
+        _index, auction_item = self._resolve_auction_item_reference(auction_item_id)
         
         if auction_item is None:
-            return {"error": f"未找到拍卖物品 {auction_item_id}"}
+            return {
+                "error": f"未找到拍卖物品 {auction_item_id}",
+                "available_auction_items": self._list_auction_pool_brief(),
+            }
         
         # 记录出价（不公开）
         auction_item.sealed_bids[player_id] = bid_amount
@@ -865,7 +938,8 @@ class GameManager:
         return {
             "success": True,
             "player_id": player_id,
-            "item_id": auction_item_id,
+            "item_id": auction_item.artifact.id,
+            "requested_item_id": auction_item_id,
             "message": "出价已记录",
         }
     
@@ -882,14 +956,13 @@ class GameManager:
         if self.game_state is None:
             return {"error": "游戏未初始化"}
         
-        auction_item = None
-        for ai in self.game_state.global_state.auction_pool:
-            if ai.artifact.id == auction_item_id:
-                auction_item = ai
-                break
+        _index, auction_item = self._resolve_auction_item_reference(auction_item_id)
         
         if auction_item is None:
-            return {"error": f"未找到拍卖物品 {auction_item_id}"}
+            return {
+                "error": f"未找到拍卖物品 {auction_item_id}",
+                "available_auction_items": self._list_auction_pool_brief(),
+            }
         
         if not auction_item.sealed_bids:
             return {"error": "没有出价记录"}
@@ -918,7 +991,8 @@ class GameManager:
         
         return {
             "success": True,
-            "item_id": auction_item_id,
+            "item_id": auction_item.artifact.id,
+            "requested_item_id": auction_item_id,
             "item_name": auction_item.artifact.name,
             "all_bids": {
                 self.game_state.players[pid].name: bid 
@@ -1008,6 +1082,452 @@ class GameManager:
         if self.game_state is None:
             return []
         return self.game_state.action_log[-limit:]
+
+    def get_auction_state(self, auction_item_id: str) -> dict:
+        """
+        获取拍卖物品的当前状态，包括活跃竞价者列表
+        
+        Args:
+            auction_item_id: 拍卖物品ID
+            
+        Returns:
+            拍卖状态信息
+        """
+        if self.game_state is None:
+            return {"error": "游戏未初始化"}
+        
+        _index, auction_item = self._resolve_auction_item_reference(auction_item_id)
+        if auction_item is None:
+            return {
+                "error": f"未找到拍卖物品 {auction_item_id}",
+                "available_auction_items": self._list_auction_pool_brief(),
+            }
+        
+        return {
+            "success": True,
+            "item_id": auction_item.artifact.id,
+            "item_name": auction_item.artifact.name,
+            "auction_type": auction_item.auction_type.value,
+            "current_highest_bid": auction_item.current_highest_bid,
+            "current_highest_bidder": auction_item.current_highest_bidder,
+            "all_players": list(self.game_state.players.keys()),
+            "turn_order": self.game_state.global_state.turn_order,
+        }
+
+    def update_open_auction_bid(
+        self,
+        auction_item_id: str,
+        player_id: str,
+        bid_amount: int,
+    ) -> dict:
+        """
+        更新公开拍卖的出价
+        
+        Args:
+            auction_item_id: 拍卖物品ID
+            player_id: 出价玩家ID
+            bid_amount: 出价金额
+            
+        Returns:
+            操作结果
+        """
+        if self.game_state is None:
+            return {"error": "游戏未初始化"}
+        
+        player = self.game_state.get_player(player_id)
+        if player is None:
+            return {"error": f"玩家 {player_id} 不存在"}
+        
+        if bid_amount > player.money:
+            return {"error": f"出价 {bid_amount} 超过持有资金 {player.money}"}
+        
+        _index, auction_item = self._resolve_auction_item_reference(auction_item_id)
+        if auction_item is None:
+            return {
+                "error": f"未找到拍卖物品 {auction_item_id}",
+                "available_auction_items": self._list_auction_pool_brief(),
+            }
+        
+        if auction_item.auction_type != AuctionType.OPEN:
+            return {"error": "该物品不是公开拍卖类型"}
+        
+        if bid_amount <= auction_item.current_highest_bid:
+            return {
+                "error": f"出价必须高于当前最高价 {auction_item.current_highest_bid}",
+                "current_highest_bid": auction_item.current_highest_bid,
+            }
+        
+        auction_item.current_highest_bid = bid_amount
+        auction_item.current_highest_bidder = player_id
+        
+        self.game_state.add_log(
+            f"公开拍卖 [{auction_item.artifact.name}]: {player.name} 出价 {bid_amount}"
+        )
+        
+        return {
+            "success": True,
+            "item_id": auction_item.artifact.id,
+            "item_name": auction_item.artifact.name,
+            "player_id": player_id,
+            "player_name": player.name,
+            "bid_amount": bid_amount,
+        }
+
+    def finalize_open_auction(
+        self,
+        auction_item_id: str,
+    ) -> dict:
+        """
+        结算公开拍卖：将文物转移给最高出价者，扣除资金，扣减稳定性
+        
+        Args:
+            auction_item_id: 拍卖物品ID
+            
+        Returns:
+            结算结果
+        """
+        if self.game_state is None:
+            return {"error": "游戏未初始化"}
+        
+        index, auction_item = self._resolve_auction_item_reference(auction_item_id)
+        if auction_item is None:
+            return {
+                "error": f"未找到拍卖物品 {auction_item_id}",
+                "available_auction_items": self._list_auction_pool_brief(),
+            }
+        
+        winner_id = auction_item.current_highest_bidder
+        winning_bid = auction_item.current_highest_bid
+        
+        if winner_id is None or winning_bid <= 0:
+            # 流拍：无人出价
+            self.game_state.global_state.auction_pool.pop(index)
+            self.game_state.global_state.discard_pile.append(auction_item.artifact)
+            self.game_state.add_log(
+                f"拍卖流拍 [{auction_item.artifact.name}]: 无人出价，文物进入弃牌堆"
+            )
+            return {
+                "success": True,
+                "result": "no_sale",
+                "item_id": auction_item.artifact.id,
+                "item_name": auction_item.artifact.name,
+                "message": "无人出价，拍卖流拍",
+            }
+        
+        winner = self.game_state.get_player(winner_id)
+        if winner is None:
+            return {"error": f"赢家 {winner_id} 不存在"}
+        
+        if winner.money < winning_bid:
+            return {"error": f"赢家资金不足: 需要 {winning_bid}，实际 {winner.money}"}
+        
+        # 扣除资金
+        winner.money -= winning_bid
+        
+        # 转移文物
+        artifact = self.game_state.global_state.auction_pool.pop(index).artifact
+        winner.artifacts.append(artifact)
+        
+        # 扣减稳定性
+        stability_cost = artifact.time_cost
+        gs = self.game_state.global_state
+        gs.stability = max(0, gs.stability - stability_cost)
+        
+        self.game_state.add_log(
+            f"拍卖成交 [{artifact.name}]: {winner.name} 以 {winning_bid} 金币获得，"
+            f"稳定性 -{stability_cost} (当前 {gs.stability}%)"
+        )
+        
+        return {
+            "success": True,
+            "result": "sold",
+            "item_id": artifact.id,
+            "item_name": artifact.name,
+            "winner_id": winner_id,
+            "winner_name": winner.name,
+            "winning_bid": winning_bid,
+            "stability_cost": stability_cost,
+            "current_stability": gs.stability,
+        }
+
+    def get_players_for_action(self, action_type: str = "general") -> dict:
+        """
+        获取需要进行某类行动的玩家列表
+        
+        Args:
+            action_type: 行动类型 ("auction", "trade", "vote", "stabilize", "general")
+            
+        Returns:
+            玩家列表和相关状态
+        """
+        if self.game_state is None:
+            return {"error": "游戏未初始化"}
+        
+        turn_order = self.game_state.global_state.turn_order
+        players_info = []
+        
+        for player_id in turn_order:
+            player = self.game_state.players.get(player_id)
+            if player is None:
+                continue
+            players_info.append({
+                "player_id": player_id,
+                "name": player.name,
+                "is_human": player.is_human,
+                "money": player.money,
+                "victory_points": player.victory_points,
+                "artifact_count": len(player.artifacts),
+                "card_count": len(player.function_cards),
+                "has_acted": player.has_acted,
+            })
+        
+        return {
+            "success": True,
+            "action_type": action_type,
+            "turn_order": turn_order,
+            "players": players_info,
+            "current_player_id": self.game_state.global_state.current_player_id,
+        }
+
+    def execute_trade(
+        self,
+        from_player_id: str,
+        to_player_id: str,
+        from_offers: dict,
+        to_offers: dict,
+    ) -> dict:
+        """
+        执行玩家间交易
+        
+        Args:
+            from_player_id: 发起方玩家ID
+            to_player_id: 接收方玩家ID
+            from_offers: 发起方提供的物品 {"money": int, "artifact_ids": list, "card_ids": list}
+            to_offers: 接收方提供的物品 {"money": int, "artifact_ids": list, "card_ids": list}
+            
+        Returns:
+            交易结果
+        """
+        if self.game_state is None:
+            return {"error": "游戏未初始化"}
+        
+        from_player = self.game_state.get_player(from_player_id)
+        to_player = self.game_state.get_player(to_player_id)
+        
+        if from_player is None:
+            return {"error": f"玩家 {from_player_id} 不存在"}
+        if to_player is None:
+            return {"error": f"玩家 {to_player_id} 不存在"}
+        
+        # 验证资金
+        from_money = from_offers.get("money", 0)
+        to_money = to_offers.get("money", 0)
+        
+        if from_money > from_player.money:
+            return {"error": f"{from_player.name} 资金不足: 需要 {from_money}，实际 {from_player.money}"}
+        if to_money > to_player.money:
+            return {"error": f"{to_player.name} 资金不足: 需要 {to_money}，实际 {to_player.money}"}
+        
+        # 验证并收集文物
+        from_artifacts = []
+        for artifact_id in from_offers.get("artifact_ids", []):
+            artifact = next((a for a in from_player.artifacts if a.id == artifact_id), None)
+            if artifact is None:
+                return {"error": f"{from_player.name} 没有文物 {artifact_id}"}
+            from_artifacts.append(artifact)
+        
+        to_artifacts = []
+        for artifact_id in to_offers.get("artifact_ids", []):
+            artifact = next((a for a in to_player.artifacts if a.id == artifact_id), None)
+            if artifact is None:
+                return {"error": f"{to_player.name} 没有文物 {artifact_id}"}
+            to_artifacts.append(artifact)
+        
+        # 验证并收集功能卡
+        from_cards = []
+        for card_id in from_offers.get("card_ids", []):
+            card = next((c for c in from_player.function_cards if c.id == card_id), None)
+            if card is None:
+                return {"error": f"{from_player.name} 没有功能卡 {card_id}"}
+            from_cards.append(card)
+        
+        to_cards = []
+        for card_id in to_offers.get("card_ids", []):
+            card = next((c for c in to_player.function_cards if c.id == card_id), None)
+            if card is None:
+                return {"error": f"{to_player.name} 没有功能卡 {card_id}"}
+            to_cards.append(card)
+        
+        # 执行交易
+        # 资金转移
+        from_player.money -= from_money
+        to_player.money += from_money
+        to_player.money -= to_money
+        from_player.money += to_money
+        
+        # 文物转移
+        for artifact in from_artifacts:
+            from_player.artifacts.remove(artifact)
+            to_player.artifacts.append(artifact)
+        for artifact in to_artifacts:
+            to_player.artifacts.remove(artifact)
+            from_player.artifacts.append(artifact)
+        
+        # 功能卡转移
+        for card in from_cards:
+            from_player.function_cards.remove(card)
+            to_player.function_cards.append(card)
+        for card in to_cards:
+            to_player.function_cards.remove(card)
+            from_player.function_cards.append(card)
+        
+        # 计算 VP 奖励 (交易额/2)
+        total_money_traded = from_money + to_money
+        vp_reward = total_money_traded // 2
+        if vp_reward > 0:
+            from_player.victory_points += vp_reward
+            to_player.victory_points += vp_reward
+        
+        # 记录日志
+        trade_details = []
+        if from_money > 0:
+            trade_details.append(f"{from_player.name} 支付 {from_money} 金币")
+        if to_money > 0:
+            trade_details.append(f"{to_player.name} 支付 {to_money} 金币")
+        if from_artifacts:
+            trade_details.append(f"{from_player.name} 给出文物: {', '.join(a.name for a in from_artifacts)}")
+        if to_artifacts:
+            trade_details.append(f"{to_player.name} 给出文物: {', '.join(a.name for a in to_artifacts)}")
+        if from_cards:
+            trade_details.append(f"{from_player.name} 给出功能卡: {', '.join(c.name for c in from_cards)}")
+        if to_cards:
+            trade_details.append(f"{to_player.name} 给出功能卡: {', '.join(c.name for c in to_cards)}")
+        
+        self.game_state.add_log(f"交易完成: {'; '.join(trade_details)}" + (f" (双方各获得 {vp_reward} VP)" if vp_reward > 0 else ""))
+        
+        return {
+            "success": True,
+            "from_player": from_player.name,
+            "to_player": to_player.name,
+            "from_offers": {
+                "money": from_money,
+                "artifacts": [a.name for a in from_artifacts],
+                "cards": [c.name for c in from_cards],
+            },
+            "to_offers": {
+                "money": to_money,
+                "artifacts": [a.name for a in to_artifacts],
+                "cards": [c.name for c in to_cards],
+            },
+            "vp_reward": vp_reward,
+        }
+
+    def sell_artifact_to_system(
+        self,
+        player_id: str,
+        artifact_id: str,
+    ) -> dict:
+        """
+        玩家出售文物给系统
+        
+        Args:
+            player_id: 玩家ID
+            artifact_id: 文物ID
+            
+        Returns:
+            出售结果
+        """
+        if self.game_state is None:
+            return {"error": "游戏未初始化"}
+        
+        player = self.game_state.get_player(player_id)
+        if player is None:
+            return {"error": f"玩家 {player_id} 不存在"}
+        
+        artifact = next((a for a in player.artifacts if a.id == artifact_id), None)
+        if artifact is None:
+            return {"error": f"玩家没有文物 {artifact_id}"}
+        
+        # 计算出售价格
+        era_key = artifact.era.value
+        multiplier = self.game_state.global_state.era_multipliers.get(era_key, 1.0)
+        base_price = int(artifact.base_value * multiplier)
+        
+        # 危机区惩罚
+        if self.game_state.global_state.stability < 15:
+            base_price = max(0, base_price - 5)
+        
+        # 执行出售
+        player.artifacts.remove(artifact)
+        player.money += base_price
+        self.game_state.global_state.system_warehouse.append(artifact)
+        
+        self.game_state.add_log(
+            f"系统回购: {player.name} 出售 [{artifact.name}] 获得 {base_price} 金币"
+        )
+        
+        return {
+            "success": True,
+            "player_id": player_id,
+            "player_name": player.name,
+            "artifact_id": artifact_id,
+            "artifact_name": artifact.name,
+            "sell_price": base_price,
+            "era": era_key,
+            "multiplier": multiplier,
+        }
+
+    def get_tradeable_assets(self, player_id: str) -> dict:
+        """
+        获取玩家可交易的资产列表
+        
+        Args:
+            player_id: 玩家ID
+            
+        Returns:
+            可交易资产信息
+        """
+        if self.game_state is None:
+            return {"error": "游戏未初始化"}
+        
+        player = self.game_state.get_player(player_id)
+        if player is None:
+            return {"error": f"玩家 {player_id} 不存在"}
+        
+        era_multipliers = self.game_state.global_state.era_multipliers
+        stability = self.game_state.global_state.stability
+        
+        artifacts_info = []
+        for artifact in player.artifacts:
+            era_key = artifact.era.value
+            multiplier = era_multipliers.get(era_key, 1.0)
+            sell_price = int(artifact.base_value * multiplier)
+            if stability < 15:
+                sell_price = max(0, sell_price - 5)
+            artifacts_info.append({
+                "id": artifact.id,
+                "name": artifact.name,
+                "era": era_key,
+                "base_value": artifact.base_value,
+                "current_sell_price": sell_price,
+            })
+        
+        cards_info = []
+        for card in player.function_cards:
+            cards_info.append({
+                "id": card.id,
+                "name": card.name,
+                "effect": card.effect,
+            })
+        
+        return {
+            "success": True,
+            "player_id": player_id,
+            "player_name": player.name,
+            "money": player.money,
+            "artifacts": artifacts_info,
+            "function_cards": cards_info,
+        }
 
 
 # 全局游戏管理器实例

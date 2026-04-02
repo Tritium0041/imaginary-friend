@@ -4,6 +4,7 @@ FastAPI 后端 - WebSocket 实时游戏接口（支持 GM 流式输出）
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -142,6 +143,59 @@ def _normalize_output_message(message: str | dict[str, Any]) -> dict[str, Any]:
             return {"kind": "error", "content": str(message.get("content", ""))}
         return {"kind": "gm", "content": str(message.get("content", ""))}
     return {"kind": "gm", "content": str(message)}
+
+
+def _flatten_content_for_estimation(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (dict, list)):
+        return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+    return str(content)
+
+
+def _estimate_tokens_from_text(text: str) -> int:
+    if not text:
+        return 0
+    cjk_chars = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    other_chars = max(0, len(text) - cjk_chars)
+    return cjk_chars + ((other_chars + 3) // 4)
+
+
+def _build_context_metrics(runtime: GameRuntime) -> dict[str, int]:
+    session = runtime.gm.session
+    messages = list(getattr(session, "messages", []) or [])
+
+    message_count = len(messages)
+    estimated_chars = 0
+    estimated_tokens = 0
+
+    for message in messages:
+        role = str(getattr(message, "role", ""))
+        name = getattr(message, "name", None)
+        content_text = _flatten_content_for_estimation(getattr(message, "content", ""))
+        message_text = "\n".join(
+            part for part in (role, str(name) if name else "", content_text) if part
+        )
+        estimated_chars += len(message_text)
+        estimated_tokens += _estimate_tokens_from_text(message_text) + 4
+
+    return {
+        "message_count": message_count,
+        "estimated_chars": estimated_chars,
+        "estimated_tokens": estimated_tokens,
+        "max_response_tokens": int(getattr(runtime.gm.config, "max_tokens", 0) or 0),
+    }
+
+
+def _build_state_snapshot(runtime: GameRuntime) -> dict[str, Any]:
+    state = runtime.game_mgr.get_game_state()
+    if not isinstance(state, dict):
+        return {"state": state}
+    if state.get("error"):
+        return state
+    state_payload = dict(state)
+    state_payload["context_metrics"] = _build_context_metrics(runtime)
+    return state_payload
 
 
 def _build_progress_event(
@@ -313,7 +367,7 @@ async def _run_gm_action(runtime: GameRuntime, action: str) -> dict[str, Any]:
             raise
 
         emit_progress("sync_state", "正在同步最新状态", percent=90)
-        state = runtime.game_mgr.get_game_state()
+        state = _build_state_snapshot(runtime)
         is_waiting = runtime.gm.session.is_waiting_for_human if runtime.gm.session else False
         _enqueue_runtime_event(
             runtime,
@@ -419,6 +473,7 @@ def _build_html_page() -> str:
             <div><span>回合</span><strong id="round-number">1</strong></div>
             <div><span>阶段</span><strong id="phase">准备</strong></div>
             <div><span>稳定性</span><strong id="stability">100%</strong></div>
+            <div><span>上下文长度</span><strong id="context-length">-</strong></div>
           </div>
         </article>
 
@@ -610,7 +665,7 @@ async def create_game(request: GameCreateRequest):
         "players": [name for name, _ in players],
         "messages": startup_messages,
         "progress_events": progress_events,
-        "state": runtime.game_mgr.get_game_state(),
+        "state": _build_state_snapshot(runtime),
         "is_waiting_for_human": gm.session.is_waiting_for_human,
     }
 
@@ -620,7 +675,7 @@ async def get_game(game_id: str):
     runtime = _require_runtime(game_id)
     return {
         "game_id": game_id,
-        "state": runtime.game_mgr.get_game_state(),
+        "state": _build_state_snapshot(runtime),
         "is_waiting_for_human": runtime.gm.session.is_waiting_for_human if runtime.gm.session else False,
     }
 
@@ -663,7 +718,7 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str):
         {
             "type": "connected",
             "game_id": game_id,
-            "state": runtime.game_mgr.get_game_state(),
+            "state": _build_state_snapshot(runtime),
             "is_waiting_for_human": runtime.gm.session.is_waiting_for_human if runtime.gm.session else False,
             "action_in_progress": runtime.action_lock.locked(),
         }

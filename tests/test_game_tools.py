@@ -224,6 +224,62 @@ def test_action_log():
         print(f"  {log}")
 
 
+def test_transfer_item_supports_auction_pool_alias_reference():
+    """测试拍卖区文物支持 artifact_N 别名引用，减少重试。"""
+    game_manager.initialize_game(
+        game_id="test_alias01",
+        player_names=[
+            ("真实玩家", True),
+            ("AI玩家1", False),
+            ("AI玩家2", False),
+        ],
+        initial_money=20,
+    )
+    state = game_manager.get_game_state()
+    first_item = state["auction_pool"][0]["artifact"]
+
+    transfer = game_manager.transfer_item("artifact", "artifact_1", "auction_pool", "player_0")
+    assert transfer["success"] is True
+    assert transfer["requested_item_id"] == "artifact_1"
+    assert transfer["item_id"] == first_item["id"]
+    assert transfer["item_name"] == first_item["name"]
+
+
+def test_record_sealed_bid_supports_auction_pool_alias_reference():
+    """测试密封竞标支持 artifact_N 别名引用。"""
+    game_manager.initialize_game(
+        game_id="test_alias02",
+        player_names=[
+            ("真实玩家", True),
+            ("AI玩家1", False),
+            ("AI玩家2", False),
+        ],
+        initial_money=50,
+    )
+    private_state = game_manager.get_game_state(include_private=True)
+    sealed_item = next(
+        (ai["artifact"] for ai in private_state["global_state"]["auction_pool"] if ai["auction_type"] == "sealed"),
+        None,
+    )
+    if sealed_item is None:
+        refill_result = game_manager.refill_auction_pool(target_size=len(private_state["players"]) + 4)
+        assert "error" not in refill_result
+        private_state = game_manager.get_game_state(include_private=True)
+        sealed_item = next(
+            (ai["artifact"] for ai in private_state["global_state"]["auction_pool"] if ai["auction_type"] == "sealed"),
+            None,
+        )
+    assert sealed_item is not None
+
+    pool = private_state["global_state"]["auction_pool"]
+    alias_index = next(i for i, ai in enumerate(pool) if ai["artifact"]["id"] == sealed_item["id"])
+    alias = f"artifact_{alias_index + 1}"
+    bid_result = game_manager.record_sealed_bid("player_0", alias, 10)
+    assert bid_result["success"] is True
+    assert bid_result["requested_item_id"] == alias
+    assert bid_result["item_id"] == sealed_item["id"]
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print("运行游戏工具测试")

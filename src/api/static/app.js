@@ -32,6 +32,7 @@ const els = {
   roundNumber: document.getElementById("round-number"),
   phase: document.getElementById("phase"),
   stability: document.getElementById("stability"),
+  contextLength: document.getElementById("context-length"),
   playersList: document.getElementById("players-list"),
   auctionItems: document.getElementById("auction-items"),
   startupProgressWrap: document.getElementById("startup-progress-wrap"),
@@ -365,6 +366,16 @@ function renderState(payload) {
   els.roundNumber.textContent = payload.current_round ?? 1;
   els.phase.textContent = translatePhase(payload.current_phase);
   els.stability.textContent = `${payload.stability ?? 100}%`;
+  const metrics = payload.context_metrics || {};
+  const estTokens = Number.isFinite(metrics.estimated_tokens) ? metrics.estimated_tokens : null;
+  const maxResponse = Number.isFinite(metrics.max_response_tokens) ? metrics.max_response_tokens : null;
+  if (estTokens !== null) {
+    els.contextLength.textContent = maxResponse !== null
+      ? `≈${estTokens} tokens · max ${maxResponse}`
+      : `≈${estTokens} tokens`;
+  } else {
+    els.contextLength.textContent = "-";
+  }
   renderPlayers(payload.players, payload.current_player_id ?? payload.current_player);
   renderAuctionPool(payload.auction_pool ?? []);
 }

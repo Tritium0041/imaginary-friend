@@ -323,6 +323,111 @@ class GMAgent:
                     },
                     "required": ["message"]
                 }
+            },
+            # 新增工具：公开拍卖相关
+            {
+                "name": "get_auction_state",
+                "description": "获取拍卖物品的当前状态，包括最高出价和出价者",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "auction_item_id": {"type": "string", "description": "拍卖物品标准ID（artifact.id），例如 anc_05；禁止使用 artifact_1 等别名"}
+                    },
+                    "required": ["auction_item_id"]
+                }
+            },
+            {
+                "name": "update_open_auction_bid",
+                "description": "更新公开拍卖的出价（记录某玩家的出价）",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "auction_item_id": {"type": "string"},
+                        "player_id": {"type": "string"},
+                        "bid_amount": {"type": "integer"}
+                    },
+                    "required": ["auction_item_id", "player_id", "bid_amount"]
+                }
+            },
+            {
+                "name": "finalize_open_auction",
+                "description": "结算公开拍卖：将文物转移给最高出价者，扣除资金，扣减稳定性",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "auction_item_id": {"type": "string"}
+                    },
+                    "required": ["auction_item_id"]
+                }
+            },
+            {
+                "name": "get_players_for_action",
+                "description": "获取需要进行某类行动的玩家列表（用于轮询）",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action_type": {
+                            "type": "string",
+                            "enum": ["auction", "trade", "vote", "stabilize", "general"],
+                            "description": "行动类型"
+                        }
+                    },
+                    "required": []
+                }
+            },
+            # 新增工具：交易相关
+            {
+                "name": "execute_trade",
+                "description": "执行玩家间交易",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "from_player_id": {"type": "string", "description": "发起方玩家ID"},
+                        "to_player_id": {"type": "string", "description": "接收方玩家ID"},
+                        "from_offers": {
+                            "type": "object",
+                            "description": "发起方提供的物品",
+                            "properties": {
+                                "money": {"type": "integer", "default": 0},
+                                "artifact_ids": {"type": "array", "items": {"type": "string"}},
+                                "card_ids": {"type": "array", "items": {"type": "string"}}
+                            }
+                        },
+                        "to_offers": {
+                            "type": "object",
+                            "description": "接收方提供的物品",
+                            "properties": {
+                                "money": {"type": "integer", "default": 0},
+                                "artifact_ids": {"type": "array", "items": {"type": "string"}},
+                                "card_ids": {"type": "array", "items": {"type": "string"}}
+                            }
+                        }
+                    },
+                    "required": ["from_player_id", "to_player_id", "from_offers", "to_offers"]
+                }
+            },
+            {
+                "name": "sell_artifact_to_system",
+                "description": "玩家出售文物给系统（出售价格=基础价值×时代倍率，危机区-5）",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "player_id": {"type": "string"},
+                        "artifact_id": {"type": "string"}
+                    },
+                    "required": ["player_id", "artifact_id"]
+                }
+            },
+            {
+                "name": "get_tradeable_assets",
+                "description": "获取玩家可交易的资产列表（资金、文物、功能卡）",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "player_id": {"type": "string"}
+                    },
+                    "required": ["player_id"]
+                }
             }
         ]
 
@@ -447,6 +552,33 @@ class GMAgent:
         elif name == "broadcast_message":
             self._emit_text(f"\n🎭 【GM播报】{args['message']}\n")
             result = {"success": True}
+        # 新增工具处理
+        elif name == "get_auction_state":
+            result = self.game_mgr.get_auction_state(args["auction_item_id"])
+        elif name == "update_open_auction_bid":
+            result = self.game_mgr.update_open_auction_bid(
+                args["auction_item_id"],
+                args["player_id"],
+                args["bid_amount"]
+            )
+        elif name == "finalize_open_auction":
+            result = self.game_mgr.finalize_open_auction(args["auction_item_id"])
+        elif name == "get_players_for_action":
+            result = self.game_mgr.get_players_for_action(args.get("action_type", "general"))
+        elif name == "execute_trade":
+            result = self.game_mgr.execute_trade(
+                args["from_player_id"],
+                args["to_player_id"],
+                args.get("from_offers", {}),
+                args.get("to_offers", {})
+            )
+        elif name == "sell_artifact_to_system":
+            result = self.game_mgr.sell_artifact_to_system(
+                args["player_id"],
+                args["artifact_id"]
+            )
+        elif name == "get_tradeable_assets":
+            result = self.game_mgr.get_tradeable_assets(args["player_id"])
         else:
             result = {"error": f"未知工具: {name}"}
 
@@ -757,26 +889,75 @@ class PlayerAgent:
     
     def decide(self, context: str, game_state: dict) -> dict:
         """做出决策"""
+        player_state = game_state.get('players', {}).get(self.player_id, {})
+        
         # 构建提示
         state_summary = f"""
 当前游戏状态:
 - 回合: {game_state.get('current_round', 1)}
 - 阶段: {game_state.get('current_phase', 'unknown')}
-- 你的资金: {game_state.get('players', {}).get(self.player_id, {}).get('money', 0)}
-- 你的VP: {game_state.get('players', {}).get(self.player_id, {}).get('victory_points', 0)}
+- 你的资金: {player_state.get('money', 0)}
+- 你的VP: {player_state.get('victory_points', 0)}
 """
         
+        # 拍卖区信息
         if game_state.get('auction_pool'):
             state_summary += "\n拍卖区物品:\n"
             for item in game_state['auction_pool']:
                 artifact = item.get('artifact', {})
-                state_summary += f"  - {artifact.get('name', '未知')} ({artifact.get('era', '?')}): 基础价值 {artifact.get('base_value', 0)}\n"
+                highest_bid = item.get('current_highest_bid')
+                if not isinstance(highest_bid, (int, float)):
+                    highest_bid = 0
+                highest_bidder = item.get('current_highest_bidder')
+                bid_info = f", 当前最高出价: {highest_bid}" if highest_bid > 0 else ""
+                bidder_info = f" (出价者: {highest_bidder})" if highest_bidder else ""
+                state_summary += f"  - {artifact.get('name', '未知')} ({artifact.get('era', '?')}): 基础价值 {artifact.get('base_value', 0)}{bid_info}{bidder_info}\n"
+        
+        # 交易相关 - 展示你的可交易资产
+        if "trade" in context.lower() or "交易" in context:
+            state_summary += f"\n你的可交易资产:\n"
+            state_summary += f"  - 资金: {player_state.get('money', 0)}\n"
+            if player_state.get('artifacts'):
+                state_summary += f"  - 文物:\n"
+                for art in player_state['artifacts']:
+                    state_summary += f"    * {art.get('name', '未知')} ({art.get('era', '?')}, 基础价值{art.get('base_value', 0)})\n"
+            if player_state.get('function_cards'):
+                state_summary += f"  - 功能卡: {len(player_state['function_cards'])} 张\n"
+            
+            # 展示其他玩家的基本情况（可能交易对象）
+            state_summary += "\n其他玩家:\n"
+            for pid, pstate in game_state.get('players', {}).items():
+                if pid != self.player_id:
+                    pname = pstate.get('name', pid)
+                    art_count = len(pstate.get('artifacts', []))
+                    state_summary += f"  - {pname}: {pstate.get('money', 0)}资金, {art_count}件文物\n"
+        
+        # 功能卡相关 - 展示你拥有的功能卡
+        if "功能卡" in context or "function card" in context.lower():
+            if player_state.get('function_cards'):
+                state_summary += "\n你的功能卡:\n"
+                for card in player_state['function_cards']:
+                    state_summary += f"  - {card.get('name', '未知')}: {card.get('effect', '无描述')}\n"
+        
+        # 展示其他玩家行动信息（如果有）
+        if self.memory:
+            recent_memory = self.memory[-5:]
+            state_summary += "\n近期记忆:\n"
+            for m in recent_memory:
+                state_summary += f"  - {m}\n"
         
         prompt = f"""{state_summary}
 
 GM 请求你行动: {context}
 
-请做出你的决策。记住保持你的角色人设。"""
+请做出你的决策。记住保持你的角色人设。
+
+注意事项:
+- 如果是拍卖，你需要决定是否出价（出价必须高于当前最高出价）或放弃
+- 如果是交易，你可以提议与某位玩家交易、出售文物给系统、或跳过
+- 如果是功能卡，说明你是否使用以及如何使用
+- 如果你决定跳过/放弃，只需说"我放弃"或"我跳过本轮"
+"""
         
         # 调用 Claude
         response = self.client.messages.create(
@@ -790,7 +971,7 @@ GM 请求你行动: {context}
         response_text = response.content[0].text if response.content else ""
         
         # 记录到记忆
-        self.memory.append(f"行动: {context} -> {response_text}")
+        self.memory.append(f"行动: {context} -> {response_text[:100]}...")
         if len(self.memory) > 20:
             self.memory = self.memory[-20:]
         
@@ -799,20 +980,32 @@ GM 请求你行动: {context}
     
     def _parse_response(self, response: str, context: str) -> dict:
         """解析 Agent 响应"""
+        import re
         action = None
         
-        # 简单的关键词匹配
         response_lower = response.lower()
+        
+        # 出价
         if "出价" in response or "bid" in response_lower:
-            # 尝试提取数字
-            import re
             numbers = re.findall(r'\d+', response)
             if numbers:
                 action = {"type": "bid", "amount": int(numbers[0])}
-        elif "放弃" in response or "pass" in response_lower:
+        
+        # 放弃/跳过
+        elif "放弃" in response or "pass" in response_lower or "跳过" in response:
             action = {"type": "pass"}
+        
+        # 交易提议
         elif "交易" in response or "trade" in response_lower:
             action = {"type": "trade", "proposal": response}
+        
+        # 出售给系统
+        elif "出售" in response or "sell" in response_lower:
+            action = {"type": "sell", "proposal": response}
+        
+        # 功能卡使用
+        elif "使用" in response and "卡" in response:
+            action = {"type": "use_card", "proposal": response}
         
         return {
             "action": action,
