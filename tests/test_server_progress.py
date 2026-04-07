@@ -106,6 +106,12 @@ def test_create_game_returns_progress_events(monkeypatch):
             "estimated_chars",
             "estimated_tokens",
             "max_response_tokens",
+            "api_request_count",
+            "api_input_tokens",
+            "api_output_tokens",
+            "api_total_tokens",
+            "api_cache_creation_input_tokens",
+            "api_cache_read_input_tokens",
         }
         assert any(msg["kind"] == "gm" and msg["content"] == "fake-startup-message" for msg in payload["messages"])
         assert any(
@@ -143,6 +149,7 @@ def test_action_returns_progress_events(monkeypatch):
         assert any(evt.get("status") == "completed" and evt.get("percent") == 100 for evt in payload["progress_events"])
         assert "context_metrics" in payload["state"]
         assert payload["state"]["context_metrics"]["estimated_tokens"] >= 0
+        assert payload["state"]["context_metrics"]["api_total_tokens"] >= 0
         assert any(
             msg["kind"] == "gm" and "fake-action:我出价 12" in msg["content"]
             for msg in payload["messages"]
@@ -175,3 +182,78 @@ def test_public_state_includes_player_artifacts(monkeypatch):
         sample_player = next(iter(players.values()))
         assert "artifacts" in sample_player
         assert isinstance(sample_player["artifacts"], list)
+
+
+def test_state_includes_viewer_hand_cards(monkeypatch):
+    monkeypatch.setattr(server, "GMAgent", FakeGMAgent)
+    server.active_games.clear()
+
+    with TestClient(server.app) as client:
+        create_response = client.post(
+            "/api/games",
+            json={
+                "player_name": "测试玩家",
+                "ai_count": 2,
+                "api_key": "test-key",
+                "base_url": "",
+                "model": "fake-model",
+            },
+        )
+        assert create_response.status_code == 200
+        payload = create_response.json()
+        state = payload["state"]
+        assert state["viewer_player_id"] == "player_0"
+        assert "viewer_function_cards" in state
+        assert isinstance(state["viewer_function_cards"], list)
+        assert len(state["viewer_function_cards"]) >= 1
+        first_card = state["viewer_function_cards"][0]
+        assert set(first_card.keys()) == {"id", "name", "description", "effect"}
+        assert first_card["id"]
+        assert first_card["name"]
+
+
+def test_context_metrics_include_api_usage_when_available():
+    runtime = SimpleNamespace(
+        gm=SimpleNamespace(
+            session=SimpleNamespace(
+                messages=[
+                    SimpleNamespace(role="user", name=None, content="请开始"),
+                    SimpleNamespace(role="assistant", name=None, content="好的"),
+                ],
+                api_request_count=3,
+                api_input_tokens=400,
+                api_output_tokens=120,
+                api_cache_creation_input_tokens=70,
+                api_cache_read_input_tokens=25,
+            ),
+            config=SimpleNamespace(max_tokens=4096),
+        )
+    )
+
+    metrics = server._build_context_metrics(runtime)
+    assert metrics["api_request_count"] == 3
+    assert metrics["api_input_tokens"] == 400
+    assert metrics["api_output_tokens"] == 120
+    assert metrics["api_total_tokens"] == 520
+    assert metrics["api_cache_creation_input_tokens"] == 70
+    assert metrics["api_cache_read_input_tokens"] == 25
+    assert metrics["estimated_tokens"] >= 0
+
+
+def test_context_metrics_default_api_usage_to_zero():
+    runtime = SimpleNamespace(
+        gm=SimpleNamespace(
+            session=SimpleNamespace(
+                messages=[SimpleNamespace(role="user", name=None, content="hello")]
+            ),
+            config=SimpleNamespace(max_tokens=2048),
+        )
+    )
+
+    metrics = server._build_context_metrics(runtime)
+    assert metrics["api_request_count"] == 0
+    assert metrics["api_input_tokens"] == 0
+    assert metrics["api_output_tokens"] == 0
+    assert metrics["api_total_tokens"] == 0
+    assert metrics["api_cache_creation_input_tokens"] == 0
+    assert metrics["api_cache_read_input_tokens"] == 0

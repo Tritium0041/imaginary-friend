@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Callable, TypeVar
 import uuid
 import random
 import math
@@ -16,6 +16,7 @@ from ..models import (
     AuctionType,
     Artifact,
     FunctionCard,
+    EventCard,
     Rarity,
     PlayerState,
     AuctionItem,
@@ -30,6 +31,7 @@ from ..data import (
 from ..utils import bind_context
 
 logger = logging.getLogger(__name__)
+TLookup = TypeVar("TLookup")
 
 
 class GameManager:
@@ -70,66 +72,205 @@ class GameManager:
 
     @staticmethod
     def _normalize_lookup_text(value: str) -> str:
-        return value.strip().lower()
+        return str(value or "").strip().lower()
+
+    @staticmethod
+    def _is_disallowed_identifier_reference(normalized_ref: str) -> bool:
+        if not normalized_ref:
+            return False
+        disallowed_patterns = (
+            r"(?:func|event|anc|mod|fut)[_\-\s]*\d+",
+            r"art[_\-\s]*\d+",
+            r"(?:artifact|item|auction(?:_item)?)[_\-\s#]*\d+",
+            r"文物[_\-\s#]*\d+",
+            r"第\s*\d+\s*(?:件|号|個|个)?",
+        )
+        return any(re.fullmatch(pattern, normalized_ref) for pattern in disallowed_patterns)
+
+    @staticmethod
+    def _list_function_cards_brief(cards: list[FunctionCard]) -> list[dict[str, str]]:
+        return [{"name": card.name, "description": card.description} for card in cards]
+
+    @staticmethod
+    def _list_artifacts_brief(artifacts: list[Artifact]) -> list[dict[str, str]]:
+        return [{"name": artifact.name, "era": artifact.era.value} for artifact in artifacts]
+
+    @staticmethod
+    def _list_events_brief(events: list[EventCard]) -> list[dict[str, str]]:
+        return [{"name": event.name, "category": event.category} for event in events]
+
+    @staticmethod
+    def _pop_item_by_identity(items: list[TLookup], target: TLookup) -> TLookup | None:
+        for index, item in enumerate(items):
+            if item is target:
+                return items.pop(index)
+        return None
+
+    def _resolve_named_item(
+        self,
+        items: list[TLookup],
+        item_ref: str,
+        *,
+        name_getter: Callable[[TLookup], str],
+        id_getter: Callable[[TLookup], str],
+    ) -> tuple[TLookup | None, list[TLookup], bool]:
+        normalized_ref = self._normalize_lookup_text(item_ref)
+        if not normalized_ref:
+            return None, [], False
+        if self._is_disallowed_identifier_reference(normalized_ref):
+            return None, [], True
+
+        for item in items:
+            if self._normalize_lookup_text(id_getter(item)) == normalized_ref:
+                return None, [], True
+
+        exact_name_matches = [
+            item for item in items if self._normalize_lookup_text(name_getter(item)) == normalized_ref
+        ]
+        if len(exact_name_matches) == 1:
+            return exact_name_matches[0], exact_name_matches, False
+        if len(exact_name_matches) > 1:
+            return None, exact_name_matches, False
+
+        partial_name_matches = [
+            item
+            for item in items
+            if normalized_ref in self._normalize_lookup_text(name_getter(item))
+            or self._normalize_lookup_text(name_getter(item)) in normalized_ref
+        ]
+        if len(partial_name_matches) == 1:
+            return partial_name_matches[0], partial_name_matches, False
+        if len(partial_name_matches) > 1:
+            return None, partial_name_matches, False
+
+        return None, [], False
+
+    def _normalize_card_location(self, location: str) -> str:
+        normalized = self._normalize_lookup_text(location)
+        alias_map = {
+            "card_discard": "card_discard",
+            "card_discard_pile": "card_discard",
+            "card_discardpile": "card_discard",
+            "discard": "card_discard",
+            "discard_pile": "card_discard",
+        }
+        if normalized in alias_map:
+            return alias_map[normalized]
+        if self.game_state is not None and normalized in self.game_state.players:
+            return normalized
+        return normalized
+
+    def _list_cards_in_location(self, location: str) -> list[dict[str, str]]:
+        assert self.game_state is not None
+        if location == "deck":
+            cards = self.game_state.global_state.card_deck
+        elif location == "card_discard":
+            cards = self.game_state.global_state.card_discard_pile
+        elif location in self.game_state.players:
+            cards = self.game_state.players[location].function_cards
+        else:
+            return []
+        return self._list_function_cards_brief(cards)
+
+    def _resolve_player_function_card_reference(
+        self,
+        player: PlayerState,
+        card_ref: str,
+    ) -> tuple[FunctionCard | None, list[FunctionCard], bool]:
+        return self._resolve_named_item(
+            player.function_cards,
+            card_ref,
+            name_getter=lambda card: card.name,
+            id_getter=lambda card: card.id,
+        )
+
+    def _resolve_player_artifact_reference(
+        self,
+        player: PlayerState,
+        artifact_ref: str,
+    ) -> tuple[Artifact | None, list[Artifact], bool]:
+        return self._resolve_named_item(
+            player.artifacts,
+            artifact_ref,
+            name_getter=lambda artifact: artifact.name,
+            id_getter=lambda artifact: artifact.id,
+        )
+
+    def _resolve_event_area_reference(
+        self,
+        event_ref: str,
+    ) -> tuple[int | None, EventCard | None, list[EventCard], bool]:
+        assert self.game_state is not None
+        event_card, matched_events, id_reference_used = self._resolve_named_item(
+            self.game_state.global_state.event_area,
+            event_ref,
+            name_getter=lambda event: event.name,
+            id_getter=lambda event: event.id,
+        )
+        if event_card is None:
+            return None, None, matched_events, id_reference_used
+        index = next(
+            (i for i, candidate in enumerate(self.game_state.global_state.event_area) if candidate is event_card),
+            None,
+        )
+        return index, event_card, matched_events, id_reference_used
 
     def _resolve_auction_item_reference(
         self,
         item_ref: str,
-    ) -> tuple[int | None, AuctionItem | None]:
-        """解析拍卖区物品引用，支持真实ID、位置别名与名称匹配。"""
+    ) -> tuple[int | None, AuctionItem | None, list[AuctionItem], bool]:
+        """解析拍卖区物品引用，仅支持名称匹配。"""
         assert self.game_state is not None
         pool = self.game_state.global_state.auction_pool
-        normalized_ref = self._normalize_lookup_text(item_ref)
-        if not normalized_ref:
-            return None, None
-
-        for idx, auction_item in enumerate(pool):
-            if self._normalize_lookup_text(auction_item.artifact.id) == normalized_ref:
-                return idx, auction_item
-
-        alias_patterns = (
-            r"(?:artifact|item|auction(?:_item)?)?[_\-\s#]*([1-9]\d*)",
-            r"文物[_\-\s#]*([1-9]\d*)",
-            r"第\s*([1-9]\d*)\s*(?:件|号|個|个)?",
+        auction_item, matched_items, id_reference_used = self._resolve_named_item(
+            pool,
+            item_ref,
+            name_getter=lambda item: item.artifact.name,
+            id_getter=lambda item: item.artifact.id,
         )
-        for pattern in alias_patterns:
-            matched = re.fullmatch(pattern, normalized_ref)
-            if not matched:
-                continue
-            index = int(matched.group(1)) - 1
-            if 0 <= index < len(pool):
-                return index, pool[index]
-            return None, None
-
-        exact_name_matches = [
-            (idx, auction_item)
-            for idx, auction_item in enumerate(pool)
-            if self._normalize_lookup_text(auction_item.artifact.name) == normalized_ref
-        ]
-        if len(exact_name_matches) == 1:
-            return exact_name_matches[0]
-
-        partial_name_matches = [
-            (idx, auction_item)
-            for idx, auction_item in enumerate(pool)
-            if normalized_ref in self._normalize_lookup_text(auction_item.artifact.name)
-            or self._normalize_lookup_text(auction_item.artifact.name) in normalized_ref
-        ]
-        if len(partial_name_matches) == 1:
-            return partial_name_matches[0]
-
-        return None, None
+        if auction_item is None:
+            return None, None, matched_items, id_reference_used
+        index = next((i for i, candidate in enumerate(pool) if candidate is auction_item), None)
+        return index, auction_item, matched_items, id_reference_used
 
     def _list_auction_pool_brief(self) -> list[dict[str, str]]:
         assert self.game_state is not None
         return [
             {
-                "id": auction_item.artifact.id,
                 "name": auction_item.artifact.name,
-                "alias": f"artifact_{idx + 1}",
+                "era": auction_item.artifact.era.value,
+                "auction_type": auction_item.auction_type.value,
             }
-            for idx, auction_item in enumerate(self.game_state.global_state.auction_pool)
+            for auction_item in self.game_state.global_state.auction_pool
         ]
+
+    def _build_auction_reference_error(
+        self,
+        *,
+        requested_item_name: str,
+        matched_items: list[AuctionItem] | None = None,
+        id_reference_used: bool = False,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "requested_item_name": requested_item_name,
+            "available_auction_items": self._list_auction_pool_brief(),
+        }
+        if id_reference_used:
+            payload["error"] = "拍卖文物调用必须使用文物名称，不能使用文物ID"
+            return payload
+        if matched_items and len(matched_items) > 1:
+            payload["error"] = f"拍卖文物名称引用不唯一 {requested_item_name}"
+            payload["matched_auction_items"] = [
+                {
+                    "name": matched_item.artifact.name,
+                    "era": matched_item.artifact.era.value,
+                    "auction_type": matched_item.auction_type.value,
+                }
+                for matched_item in matched_items
+            ]
+            return payload
+        payload["error"] = f"未找到拍卖物品 {requested_item_name}"
+        return payload
     
     def initialize_game(
         self, 
@@ -507,7 +648,7 @@ class GameManager:
             "manual_resolution_required": manual_required,
         }
 
-    def resolve_event(self, event_id: str, refill_area: bool = True) -> dict:
+    def resolve_event(self, event_name: str, refill_area: bool = True) -> dict:
         """执行事件区中的一张事件卡并按规则补充事件区"""
         game_state, gs, error = self._ensure_game()
         if error:
@@ -515,23 +656,44 @@ class GameManager:
         assert game_state is not None and gs is not None
         game_logger = bind_context(logger, game_id=gs.game_id)
 
-        event_index = next((i for i, e in enumerate(gs.event_area) if e.id == event_id), None)
-        if event_index is None:
-            game_logger.warning("Resolve event failed: missing event %s", event_id)
-            return {"error": f"事件区不存在事件 {event_id}"}
+        requested_event_name = event_name
+        event_index, event_card, matched_events, id_reference_used = self._resolve_event_area_reference(
+            event_name
+        )
+        if id_reference_used:
+            return {
+                "error": "事件调用必须使用事件名称，不能使用事件ID",
+                "requested_event_name": requested_event_name,
+                "available_events": self._list_events_brief(gs.event_area),
+            }
+        if event_index is None or event_card is None:
+            error_payload: dict[str, object] = {
+                "error": f"事件区不存在事件 {event_name}",
+                "requested_event_name": requested_event_name,
+                "available_events": self._list_events_brief(gs.event_area),
+            }
+            if len(matched_events) > 1:
+                error_payload["error"] = f"事件名称引用不唯一 {event_name}"
+                error_payload["matched_events"] = self._list_events_brief(matched_events)
+            game_logger.warning("Resolve event failed: unresolved event %s", event_name)
+            return error_payload
 
-        event_card = gs.event_area.pop(event_index)
+        popped_event = gs.event_area.pop(event_index)
+        if popped_event is not event_card:
+            event_card = popped_event
         effect_result = self._apply_event_effect(event_card)
         gs.event_discard_pile.append(event_card)
 
         refill_result = None
         if refill_area and len(gs.event_area) < 2:
             refill_result = self.draw_event_to_area()
-        game_logger.info("Event resolved: %s", event_id)
+        game_logger.info("Event resolved: requested=%s resolved=%s", event_name, event_card.name)
 
         return {
             "success": True,
             "resolved_event": event_card.model_dump(),
+            "requested_event_name": requested_event_name,
+            "resolved_event_name": event_card.name,
             "effect_result": effect_result,
             "refill_result": refill_result,
             "event_area_count": len(gs.event_area),
@@ -540,7 +702,7 @@ class GameManager:
     def play_function_card(
         self,
         player_id: str,
-        card_id: str,
+        card_name: str,
         target_player_id: str | None = None,
         target_era: str | None = None,
         secondary_era: str | None = None,
@@ -557,9 +719,24 @@ class GameManager:
         if player is None:
             return {"error": f"玩家 {player_id} 不存在"}
 
-        card = next((c for c in player.function_cards if c.id == card_id), None)
+        requested_card_name = card_name
+        card, matched_cards, id_reference_used = self._resolve_player_function_card_reference(
+            player, card_name
+        )
         if card is None:
-            return {"error": f"玩家 {player_id} 没有功能卡 {card_id}"}
+            error_payload: dict[str, object] = {
+                "requested_card_name": requested_card_name,
+                "available_function_cards": self._list_function_cards_brief(player.function_cards),
+            }
+            if id_reference_used:
+                error_payload["error"] = "功能卡调用必须使用卡牌名称，不能使用卡牌ID"
+                return error_payload
+            if len(matched_cards) > 1:
+                error_payload["error"] = f"功能卡名称引用不唯一 {card_name}"
+                error_payload["matched_cards"] = self._list_function_cards_brief(matched_cards)
+                return error_payload
+            error_payload["error"] = f"玩家 {player_id} 没有功能卡 {card_name}"
+            return error_payload
 
         def clamp_multiplier(v: float) -> float:
             return max(0.5, min(2.5, round(v, 1)))
@@ -620,6 +797,8 @@ class GameManager:
                 "success": True,
                 "player_id": player_id,
                 "card": card.model_dump(),
+                "requested_card_name": requested_card_name,
+                "resolved_card_name": card.name,
                 "changes": changes,
                 "preview_events": preview,
                 "manual_resolution_required": False,
@@ -638,12 +817,19 @@ class GameManager:
             changes.append("该功能卡效果需 GM 手动结算")
 
         game_state.add_log(f"{player.name} 使用功能卡 [{card.name}]：{'；'.join(changes)}")
-        game_logger.info("Function card played: %s by %s", card_id, player_id)
+        game_logger.info(
+            "Function card played: resolved=%s requested=%s by %s",
+            card.name,
+            requested_card_name,
+            player_id,
+        )
 
         return {
             "success": True,
             "player_id": player_id,
             "card": card.model_dump(),
+            "requested_card_name": requested_card_name,
+            "resolved_card_name": card.name,
             "changes": changes,
             "manual_resolution_required": manual_required,
         }
@@ -697,7 +883,7 @@ class GameManager:
     def transfer_item(
         self,
         item_type: str,  # "artifact" 或 "card"
-        item_id: str,
+        item_name: str,
         from_location: str,  # player_id, "auction_pool", "deck"
         to_location: str,
     ) -> dict:
@@ -706,7 +892,7 @@ class GameManager:
         
         Args:
             item_type: 物品类型 ("artifact" 或 "card")
-            item_id: 物品ID
+            item_name: 物品名称
             from_location: 来源位置
             to_location: 目标位置
             
@@ -718,45 +904,156 @@ class GameManager:
         
         # 查找物品
         item = None
-        requested_item_id = item_id
-        resolved_item_id = item_id
+        requested_item_name = item_name
+        requested_from_location = from_location
+        requested_to_location = to_location
+        resolved_from_location = from_location
+        resolved_to_location = to_location
         
         if item_type == "artifact":
+            def _resolve_artifact_from_collection(
+                artifacts: list[Artifact],
+                artifact_ref: str,
+            ) -> tuple[Artifact | None, list[Artifact], bool]:
+                return self._resolve_named_item(
+                    artifacts,
+                    artifact_ref,
+                    name_getter=lambda artifact: artifact.name,
+                    id_getter=lambda artifact: artifact.id,
+                )
+
             # 从来源获取文物
             if from_location == "deck":
-                for i, a in enumerate(self.game_state.global_state.artifact_deck):
-                    if a.id == item_id:
-                        item = self.game_state.global_state.artifact_deck.pop(i)
-                        break
+                artifact, matched_artifacts, id_reference_used = _resolve_artifact_from_collection(
+                    self.game_state.global_state.artifact_deck, item_name
+                )
+                if id_reference_used:
+                    return {
+                        "error": "文物调用必须使用文物名称，不能使用文物ID",
+                        "requested_item_name": requested_item_name,
+                        "available_artifacts_in_location": self._list_artifacts_brief(
+                            self.game_state.global_state.artifact_deck
+                        ),
+                    }
+                if artifact is None:
+                    error_payload: dict[str, object] = {
+                        "error": f"未找到文物 {item_name} 在 {from_location}",
+                        "requested_item_name": requested_item_name,
+                        "available_artifacts_in_location": self._list_artifacts_brief(
+                            self.game_state.global_state.artifact_deck
+                        ),
+                    }
+                    if len(matched_artifacts) > 1:
+                        error_payload["error"] = f"文物名称引用不唯一 {item_name}"
+                        error_payload["matched_artifacts"] = self._list_artifacts_brief(matched_artifacts)
+                    return error_payload
+                item = self._pop_item_by_identity(self.game_state.global_state.artifact_deck, artifact)
             elif from_location == "discard":
-                for i, a in enumerate(self.game_state.global_state.discard_pile):
-                    if a.id == item_id:
-                        item = self.game_state.global_state.discard_pile.pop(i)
-                        break
+                artifact, matched_artifacts, id_reference_used = _resolve_artifact_from_collection(
+                    self.game_state.global_state.discard_pile, item_name
+                )
+                if id_reference_used:
+                    return {
+                        "error": "文物调用必须使用文物名称，不能使用文物ID",
+                        "requested_item_name": requested_item_name,
+                        "available_artifacts_in_location": self._list_artifacts_brief(
+                            self.game_state.global_state.discard_pile
+                        ),
+                    }
+                if artifact is None:
+                    error_payload = {
+                        "error": f"未找到文物 {item_name} 在 {from_location}",
+                        "requested_item_name": requested_item_name,
+                        "available_artifacts_in_location": self._list_artifacts_brief(
+                            self.game_state.global_state.discard_pile
+                        ),
+                    }
+                    if len(matched_artifacts) > 1:
+                        error_payload["error"] = f"文物名称引用不唯一 {item_name}"
+                        error_payload["matched_artifacts"] = self._list_artifacts_brief(matched_artifacts)
+                    return error_payload
+                item = self._pop_item_by_identity(self.game_state.global_state.discard_pile, artifact)
             elif from_location == "warehouse":
-                for i, a in enumerate(self.game_state.global_state.system_warehouse):
-                    if a.id == item_id:
-                        item = self.game_state.global_state.system_warehouse.pop(i)
-                        break
+                artifact, matched_artifacts, id_reference_used = _resolve_artifact_from_collection(
+                    self.game_state.global_state.system_warehouse, item_name
+                )
+                if id_reference_used:
+                    return {
+                        "error": "文物调用必须使用文物名称，不能使用文物ID",
+                        "requested_item_name": requested_item_name,
+                        "available_artifacts_in_location": self._list_artifacts_brief(
+                            self.game_state.global_state.system_warehouse
+                        ),
+                    }
+                if artifact is None:
+                    error_payload = {
+                        "error": f"未找到文物 {item_name} 在 {from_location}",
+                        "requested_item_name": requested_item_name,
+                        "available_artifacts_in_location": self._list_artifacts_brief(
+                            self.game_state.global_state.system_warehouse
+                        ),
+                    }
+                    if len(matched_artifacts) > 1:
+                        error_payload["error"] = f"文物名称引用不唯一 {item_name}"
+                        error_payload["matched_artifacts"] = self._list_artifacts_brief(matched_artifacts)
+                    return error_payload
+                item = self._pop_item_by_identity(self.game_state.global_state.system_warehouse, artifact)
             elif from_location == "auction_pool":
-                index, auction_item = self._resolve_auction_item_reference(item_id)
+                index, auction_item, matched_items, id_reference_used = self._resolve_auction_item_reference(
+                    item_name
+                )
+                if id_reference_used:
+                    return {
+                        "error": "拍卖文物调用必须使用文物名称，不能使用文物ID",
+                        "requested_item_name": requested_item_name,
+                        "available_auction_items": self._list_auction_pool_brief(),
+                    }
                 if index is not None and auction_item is not None:
                     item = self.game_state.global_state.auction_pool.pop(index).artifact
-                    resolved_item_id = item.id
+                elif len(matched_items) > 1:
+                    return {
+                        "error": f"拍卖文物名称引用不唯一 {item_name}",
+                        "requested_item_name": requested_item_name,
+                        "matched_auction_items": [
+                            {
+                                "name": matched_item.artifact.name,
+                                "era": matched_item.artifact.era.value,
+                                "auction_type": matched_item.auction_type.value,
+                            }
+                            for matched_item in matched_items
+                        ],
+                    }
             elif from_location in self.game_state.players:
                 player = self.game_state.players[from_location]
-                for i, a in enumerate(player.artifacts):
-                    if a.id == item_id:
-                        item = player.artifacts.pop(i)
-                        break
+                artifact, matched_artifacts, id_reference_used = self._resolve_player_artifact_reference(
+                    player, item_name
+                )
+                if id_reference_used:
+                    return {
+                        "error": "文物调用必须使用文物名称，不能使用文物ID",
+                        "requested_item_name": requested_item_name,
+                        "available_artifacts_in_location": self._list_artifacts_brief(player.artifacts),
+                    }
+                if artifact is None:
+                    error_payload = {
+                        "error": f"未找到文物 {item_name} 在 {from_location}",
+                        "requested_item_name": requested_item_name,
+                        "available_artifacts_in_location": self._list_artifacts_brief(player.artifacts),
+                    }
+                    if len(matched_artifacts) > 1:
+                        error_payload["error"] = f"文物名称引用不唯一 {item_name}"
+                        error_payload["matched_artifacts"] = self._list_artifacts_brief(matched_artifacts)
+                    return error_payload
+                item = self._pop_item_by_identity(player.artifacts, artifact)
             
             if item is None:
                 if from_location == "auction_pool":
                     return {
-                        "error": f"未找到文物 {item_id} 在 {from_location}",
+                        "error": f"未找到文物 {item_name} 在 {from_location}",
+                        "requested_item_name": requested_item_name,
                         "available_auction_items": self._list_auction_pool_brief(),
                     }
-                return {"error": f"未找到文物 {item_id} 在 {from_location}"}
+                return {"error": f"未找到文物 {item_name} 在 {from_location}"}
             
             # 放入目标位置
             if to_location == "deck":
@@ -775,50 +1072,142 @@ class GameManager:
                 return {"error": f"无效的目标位置 {to_location}"}
         
         elif item_type == "card":
-            # 功能卡转移逻辑类似
-            if from_location == "deck":
-                for i, c in enumerate(self.game_state.global_state.card_deck):
-                    if c.id == item_id:
-                        item = self.game_state.global_state.card_deck.pop(i)
-                        break
-            elif from_location == "card_discard":
-                for i, c in enumerate(self.game_state.global_state.card_discard_pile):
-                    if c.id == item_id:
-                        item = self.game_state.global_state.card_discard_pile.pop(i)
-                        break
-            elif from_location in self.game_state.players:
-                player = self.game_state.players[from_location]
-                for i, c in enumerate(player.function_cards):
-                    if c.id == item_id:
-                        item = player.function_cards.pop(i)
-                        break
+            def _resolve_card_from_collection(
+                cards: list[FunctionCard],
+                card_ref: str,
+            ) -> tuple[FunctionCard | None, list[FunctionCard], bool]:
+                return self._resolve_named_item(
+                    cards,
+                    card_ref,
+                    name_getter=lambda card: card.name,
+                    id_getter=lambda card: card.id,
+                )
+
+            valid_card_locations = ["deck", "card_discard", *self.game_state.players.keys()]
+            resolved_from_location = self._normalize_card_location(from_location)
+            resolved_to_location = self._normalize_card_location(to_location)
+            if resolved_from_location not in valid_card_locations:
+                return {
+                    "error": f"无效的来源位置 {from_location}",
+                    "normalized_from_location": resolved_from_location,
+                    "valid_card_locations": valid_card_locations,
+                }
+            if resolved_to_location not in valid_card_locations:
+                return {
+                    "error": f"无效的目标位置 {to_location}",
+                    "normalized_to_location": resolved_to_location,
+                    "valid_card_locations": valid_card_locations,
+                }
+
+            # 功能卡转移逻辑
+            if resolved_from_location == "deck":
+                card, matched_cards, id_reference_used = _resolve_card_from_collection(
+                    self.game_state.global_state.card_deck, item_name
+                )
+                if id_reference_used:
+                    return {
+                        "error": "功能卡调用必须使用卡牌名称，不能使用卡牌ID",
+                        "requested_item_name": requested_item_name,
+                        "available_cards_in_location": self._list_cards_in_location(resolved_from_location),
+                        "valid_card_locations": valid_card_locations,
+                    }
+                if card is None:
+                    error_payload = {
+                        "error": f"未找到功能卡 {item_name} 在 {from_location}",
+                        "requested_item_name": requested_item_name,
+                        "normalized_from_location": resolved_from_location,
+                        "available_cards_in_location": self._list_cards_in_location(resolved_from_location),
+                        "valid_card_locations": valid_card_locations,
+                    }
+                    if len(matched_cards) > 1:
+                        error_payload["error"] = f"功能卡名称引用不唯一 {item_name}"
+                        error_payload["matched_cards"] = self._list_function_cards_brief(matched_cards)
+                    return error_payload
+                item = self._pop_item_by_identity(self.game_state.global_state.card_deck, card)
+            elif resolved_from_location == "card_discard":
+                card, matched_cards, id_reference_used = _resolve_card_from_collection(
+                    self.game_state.global_state.card_discard_pile, item_name
+                )
+                if id_reference_used:
+                    return {
+                        "error": "功能卡调用必须使用卡牌名称，不能使用卡牌ID",
+                        "requested_item_name": requested_item_name,
+                        "available_cards_in_location": self._list_cards_in_location(resolved_from_location),
+                        "valid_card_locations": valid_card_locations,
+                    }
+                if card is None:
+                    error_payload = {
+                        "error": f"未找到功能卡 {item_name} 在 {from_location}",
+                        "requested_item_name": requested_item_name,
+                        "normalized_from_location": resolved_from_location,
+                        "available_cards_in_location": self._list_cards_in_location(resolved_from_location),
+                        "valid_card_locations": valid_card_locations,
+                    }
+                    if len(matched_cards) > 1:
+                        error_payload["error"] = f"功能卡名称引用不唯一 {item_name}"
+                        error_payload["matched_cards"] = self._list_function_cards_brief(matched_cards)
+                    return error_payload
+                item = self._pop_item_by_identity(self.game_state.global_state.card_discard_pile, card)
+            elif resolved_from_location in self.game_state.players:
+                player = self.game_state.players[resolved_from_location]
+                card, matched_cards, id_reference_used = self._resolve_player_function_card_reference(
+                    player, item_name
+                )
+                if id_reference_used:
+                    return {
+                        "error": "功能卡调用必须使用卡牌名称，不能使用卡牌ID",
+                        "requested_item_name": requested_item_name,
+                        "normalized_from_location": resolved_from_location,
+                        "available_cards_in_location": self._list_cards_in_location(resolved_from_location),
+                        "valid_card_locations": valid_card_locations,
+                    }
+                if card is None:
+                    error_payload = {
+                        "error": f"未找到功能卡 {item_name} 在 {from_location}",
+                        "requested_item_name": requested_item_name,
+                        "normalized_from_location": resolved_from_location,
+                        "available_cards_in_location": self._list_cards_in_location(resolved_from_location),
+                        "valid_card_locations": valid_card_locations,
+                    }
+                    if len(matched_cards) > 1:
+                        error_payload["error"] = f"功能卡名称引用不唯一 {item_name}"
+                        error_payload["matched_cards"] = self._list_function_cards_brief(matched_cards)
+                    return error_payload
+                item = self._pop_item_by_identity(player.function_cards, card)
             
             if item is None:
-                return {"error": f"未找到功能卡 {item_id} 在 {from_location}"}
+                return {
+                    "error": f"未找到功能卡 {item_name} 在 {from_location}",
+                    "requested_item_name": requested_item_name,
+                    "normalized_from_location": resolved_from_location,
+                    "available_cards_in_location": self._list_cards_in_location(resolved_from_location),
+                    "valid_card_locations": valid_card_locations,
+                }
             
-            if to_location == "deck":
+            if resolved_to_location == "deck":
                 self.game_state.global_state.card_deck.append(item)
-            elif to_location == "card_discard":
+            elif resolved_to_location == "card_discard":
                 self.game_state.global_state.card_discard_pile.append(item)
-            elif to_location in self.game_state.players:
-                self.game_state.players[to_location].function_cards.append(item)
+            elif resolved_to_location in self.game_state.players:
+                self.game_state.players[resolved_to_location].function_cards.append(item)
             else:
                 return {"error": f"无效的目标位置 {to_location}"}
         else:
             return {"error": f"无效的物品类型 {item_type}"}
-
-        resolved_item_id = item.id
         
-        self.game_state.add_log(f"物品转移: {item.name} 从 {from_location} 到 {to_location}")
+        self.game_state.add_log(
+            f"物品转移: {item.name} 从 {requested_from_location} 到 {requested_to_location}"
+        )
         
         return {
             "success": True,
             "item_type": item_type,
-            "item_id": resolved_item_id,
-            "requested_item_id": requested_item_id,
             "item_name": item.name,
-            "from": from_location,
-            "to": to_location,
+            "requested_item_name": requested_item_name,
+            "from": requested_from_location,
+            "to": requested_to_location,
+            "resolved_from_location": resolved_from_location,
+            "resolved_to_location": resolved_to_location,
         }
     
     def update_global_status(
@@ -895,7 +1284,7 @@ class GameManager:
     def record_sealed_bid(
         self,
         player_id: str,
-        auction_item_id: str,
+        auction_item_name: str,
         bid_amount: int,
     ) -> dict:
         """
@@ -903,7 +1292,7 @@ class GameManager:
         
         Args:
             player_id: 玩家ID
-            auction_item_id: 拍卖物品ID
+            auction_item_name: 拍卖物品名称
             bid_amount: 出价金额
             
         Returns:
@@ -923,13 +1312,15 @@ class GameManager:
             return {"error": "出价不能为负数"}
         
         # 找到拍卖物品
-        _index, auction_item = self._resolve_auction_item_reference(auction_item_id)
-        
+        _index, auction_item, matched_items, id_reference_used = self._resolve_auction_item_reference(
+            auction_item_name
+        )
         if auction_item is None:
-            return {
-                "error": f"未找到拍卖物品 {auction_item_id}",
-                "available_auction_items": self._list_auction_pool_brief(),
-            }
+            return self._build_auction_reference_error(
+                requested_item_name=auction_item_name,
+                matched_items=matched_items,
+                id_reference_used=id_reference_used,
+            )
         
         # 记录出价（不公开）
         auction_item.sealed_bids[player_id] = bid_amount
@@ -938,17 +1329,17 @@ class GameManager:
         return {
             "success": True,
             "player_id": player_id,
-            "item_id": auction_item.artifact.id,
-            "requested_item_id": auction_item_id,
+            "item_name": auction_item.artifact.name,
+            "requested_item_name": auction_item_name,
             "message": "出价已记录",
         }
     
-    def reveal_sealed_bids(self, auction_item_id: str) -> dict:
+    def reveal_sealed_bids(self, auction_item_name: str) -> dict:
         """
         揭示密封竞标结果（仅 GM 可调用）
         
         Args:
-            auction_item_id: 拍卖物品ID
+            auction_item_name: 拍卖物品名称
             
         Returns:
             竞标结果，包含所有出价和赢家
@@ -956,13 +1347,15 @@ class GameManager:
         if self.game_state is None:
             return {"error": "游戏未初始化"}
         
-        _index, auction_item = self._resolve_auction_item_reference(auction_item_id)
-        
+        _index, auction_item, matched_items, id_reference_used = self._resolve_auction_item_reference(
+            auction_item_name
+        )
         if auction_item is None:
-            return {
-                "error": f"未找到拍卖物品 {auction_item_id}",
-                "available_auction_items": self._list_auction_pool_brief(),
-            }
+            return self._build_auction_reference_error(
+                requested_item_name=auction_item_name,
+                matched_items=matched_items,
+                id_reference_used=id_reference_used,
+            )
         
         if not auction_item.sealed_bids:
             return {"error": "没有出价记录"}
@@ -991,9 +1384,8 @@ class GameManager:
         
         return {
             "success": True,
-            "item_id": auction_item.artifact.id,
-            "requested_item_id": auction_item_id,
             "item_name": auction_item.artifact.name,
+            "requested_item_name": auction_item_name,
             "all_bids": {
                 self.game_state.players[pid].name: bid 
                 for pid, bid in bids.items()
@@ -1083,12 +1475,12 @@ class GameManager:
             return []
         return self.game_state.action_log[-limit:]
 
-    def get_auction_state(self, auction_item_id: str) -> dict:
+    def get_auction_state(self, auction_item_name: str) -> dict:
         """
         获取拍卖物品的当前状态，包括活跃竞价者列表
         
         Args:
-            auction_item_id: 拍卖物品ID
+            auction_item_name: 拍卖物品名称
             
         Returns:
             拍卖状态信息
@@ -1096,17 +1488,20 @@ class GameManager:
         if self.game_state is None:
             return {"error": "游戏未初始化"}
         
-        _index, auction_item = self._resolve_auction_item_reference(auction_item_id)
+        _index, auction_item, matched_items, id_reference_used = self._resolve_auction_item_reference(
+            auction_item_name
+        )
         if auction_item is None:
-            return {
-                "error": f"未找到拍卖物品 {auction_item_id}",
-                "available_auction_items": self._list_auction_pool_brief(),
-            }
+            return self._build_auction_reference_error(
+                requested_item_name=auction_item_name,
+                matched_items=matched_items,
+                id_reference_used=id_reference_used,
+            )
         
         return {
             "success": True,
-            "item_id": auction_item.artifact.id,
             "item_name": auction_item.artifact.name,
+            "requested_item_name": auction_item_name,
             "auction_type": auction_item.auction_type.value,
             "current_highest_bid": auction_item.current_highest_bid,
             "current_highest_bidder": auction_item.current_highest_bidder,
@@ -1116,7 +1511,7 @@ class GameManager:
 
     def update_open_auction_bid(
         self,
-        auction_item_id: str,
+        auction_item_name: str,
         player_id: str,
         bid_amount: int,
     ) -> dict:
@@ -1124,7 +1519,7 @@ class GameManager:
         更新公开拍卖的出价
         
         Args:
-            auction_item_id: 拍卖物品ID
+            auction_item_name: 拍卖物品名称
             player_id: 出价玩家ID
             bid_amount: 出价金额
             
@@ -1141,12 +1536,15 @@ class GameManager:
         if bid_amount > player.money:
             return {"error": f"出价 {bid_amount} 超过持有资金 {player.money}"}
         
-        _index, auction_item = self._resolve_auction_item_reference(auction_item_id)
+        _index, auction_item, matched_items, id_reference_used = self._resolve_auction_item_reference(
+            auction_item_name
+        )
         if auction_item is None:
-            return {
-                "error": f"未找到拍卖物品 {auction_item_id}",
-                "available_auction_items": self._list_auction_pool_brief(),
-            }
+            return self._build_auction_reference_error(
+                requested_item_name=auction_item_name,
+                matched_items=matched_items,
+                id_reference_used=id_reference_used,
+            )
         
         if auction_item.auction_type != AuctionType.OPEN:
             return {"error": "该物品不是公开拍卖类型"}
@@ -1166,8 +1564,8 @@ class GameManager:
         
         return {
             "success": True,
-            "item_id": auction_item.artifact.id,
             "item_name": auction_item.artifact.name,
+            "requested_item_name": auction_item_name,
             "player_id": player_id,
             "player_name": player.name,
             "bid_amount": bid_amount,
@@ -1175,13 +1573,13 @@ class GameManager:
 
     def finalize_open_auction(
         self,
-        auction_item_id: str,
+        auction_item_name: str,
     ) -> dict:
         """
         结算公开拍卖：将文物转移给最高出价者，扣除资金，扣减稳定性
         
         Args:
-            auction_item_id: 拍卖物品ID
+            auction_item_name: 拍卖物品名称
             
         Returns:
             结算结果
@@ -1189,12 +1587,15 @@ class GameManager:
         if self.game_state is None:
             return {"error": "游戏未初始化"}
         
-        index, auction_item = self._resolve_auction_item_reference(auction_item_id)
-        if auction_item is None:
-            return {
-                "error": f"未找到拍卖物品 {auction_item_id}",
-                "available_auction_items": self._list_auction_pool_brief(),
-            }
+        index, auction_item, matched_items, id_reference_used = self._resolve_auction_item_reference(
+            auction_item_name
+        )
+        if index is None or auction_item is None:
+            return self._build_auction_reference_error(
+                requested_item_name=auction_item_name,
+                matched_items=matched_items,
+                id_reference_used=id_reference_used,
+            )
         
         winner_id = auction_item.current_highest_bidder
         winning_bid = auction_item.current_highest_bid
@@ -1209,8 +1610,8 @@ class GameManager:
             return {
                 "success": True,
                 "result": "no_sale",
-                "item_id": auction_item.artifact.id,
                 "item_name": auction_item.artifact.name,
+                "requested_item_name": auction_item_name,
                 "message": "无人出价，拍卖流拍",
             }
         
@@ -1241,8 +1642,8 @@ class GameManager:
         return {
             "success": True,
             "result": "sold",
-            "item_id": artifact.id,
             "item_name": artifact.name,
+            "requested_item_name": auction_item_name,
             "winner_id": winner_id,
             "winner_name": winner.name,
             "winning_bid": winning_bid,
@@ -1302,8 +1703,8 @@ class GameManager:
         Args:
             from_player_id: 发起方玩家ID
             to_player_id: 接收方玩家ID
-            from_offers: 发起方提供的物品 {"money": int, "artifact_ids": list, "card_ids": list}
-            to_offers: 接收方提供的物品 {"money": int, "artifact_ids": list, "card_ids": list}
+            from_offers: 发起方提供的物品 {"money": int, "artifact_names": list, "card_names": list}
+            to_offers: 接收方提供的物品 {"money": int, "artifact_names": list, "card_names": list}
             
         Returns:
             交易结果
@@ -1318,6 +1719,11 @@ class GameManager:
             return {"error": f"玩家 {from_player_id} 不存在"}
         if to_player is None:
             return {"error": f"玩家 {to_player_id} 不存在"}
+
+        if any(key in from_offers for key in ("artifact_ids", "card_ids")) or any(
+            key in to_offers for key in ("artifact_ids", "card_ids")
+        ):
+            return {"error": "交易参数必须使用 artifact_names/card_names，不能使用 artifact_ids/card_ids"}
         
         # 验证资金
         from_money = from_offers.get("money", 0)
@@ -1329,33 +1735,113 @@ class GameManager:
             return {"error": f"{to_player.name} 资金不足: 需要 {to_money}，实际 {to_player.money}"}
         
         # 验证并收集文物
-        from_artifacts = []
-        for artifact_id in from_offers.get("artifact_ids", []):
-            artifact = next((a for a in from_player.artifacts if a.id == artifact_id), None)
+        from_artifacts: list[Artifact] = []
+        selected_from_artifacts: set[int] = set()
+        for artifact_name in from_offers.get("artifact_names", []):
+            artifact, matched_artifacts, id_reference_used = self._resolve_player_artifact_reference(
+                from_player, artifact_name
+            )
+            if id_reference_used:
+                return {
+                    "error": f"{from_player.name} 的交易文物必须使用名称，不能使用文物ID",
+                    "requested_artifact_name": artifact_name,
+                    "available_artifacts": self._list_artifacts_brief(from_player.artifacts),
+                }
             if artifact is None:
-                return {"error": f"{from_player.name} 没有文物 {artifact_id}"}
+                error_payload: dict[str, object] = {
+                    "error": f"{from_player.name} 没有文物 {artifact_name}",
+                    "requested_artifact_name": artifact_name,
+                    "available_artifacts": self._list_artifacts_brief(from_player.artifacts),
+                }
+                if len(matched_artifacts) > 1:
+                    error_payload["error"] = f"{from_player.name} 的文物名称引用不唯一 {artifact_name}"
+                    error_payload["matched_artifacts"] = self._list_artifacts_brief(matched_artifacts)
+                return error_payload
+            if id(artifact) in selected_from_artifacts:
+                return {"error": f"{from_player.name} 的交易文物重复: {artifact_name}"}
+            selected_from_artifacts.add(id(artifact))
             from_artifacts.append(artifact)
         
-        to_artifacts = []
-        for artifact_id in to_offers.get("artifact_ids", []):
-            artifact = next((a for a in to_player.artifacts if a.id == artifact_id), None)
+        to_artifacts: list[Artifact] = []
+        selected_to_artifacts: set[int] = set()
+        for artifact_name in to_offers.get("artifact_names", []):
+            artifact, matched_artifacts, id_reference_used = self._resolve_player_artifact_reference(
+                to_player, artifact_name
+            )
+            if id_reference_used:
+                return {
+                    "error": f"{to_player.name} 的交易文物必须使用名称，不能使用文物ID",
+                    "requested_artifact_name": artifact_name,
+                    "available_artifacts": self._list_artifacts_brief(to_player.artifacts),
+                }
             if artifact is None:
-                return {"error": f"{to_player.name} 没有文物 {artifact_id}"}
+                error_payload = {
+                    "error": f"{to_player.name} 没有文物 {artifact_name}",
+                    "requested_artifact_name": artifact_name,
+                    "available_artifacts": self._list_artifacts_brief(to_player.artifacts),
+                }
+                if len(matched_artifacts) > 1:
+                    error_payload["error"] = f"{to_player.name} 的文物名称引用不唯一 {artifact_name}"
+                    error_payload["matched_artifacts"] = self._list_artifacts_brief(matched_artifacts)
+                return error_payload
+            if id(artifact) in selected_to_artifacts:
+                return {"error": f"{to_player.name} 的交易文物重复: {artifact_name}"}
+            selected_to_artifacts.add(id(artifact))
             to_artifacts.append(artifact)
         
         # 验证并收集功能卡
-        from_cards = []
-        for card_id in from_offers.get("card_ids", []):
-            card = next((c for c in from_player.function_cards if c.id == card_id), None)
+        from_cards: list[FunctionCard] = []
+        selected_from_cards: set[int] = set()
+        for card_name in from_offers.get("card_names", []):
+            card, matched_cards, id_reference_used = self._resolve_player_function_card_reference(
+                from_player, card_name
+            )
+            if id_reference_used:
+                return {
+                    "error": f"{from_player.name} 的交易功能卡必须使用名称，不能使用功能卡ID",
+                    "requested_card_name": card_name,
+                    "available_cards": self._list_function_cards_brief(from_player.function_cards),
+                }
             if card is None:
-                return {"error": f"{from_player.name} 没有功能卡 {card_id}"}
+                error_payload = {
+                    "error": f"{from_player.name} 没有功能卡 {card_name}",
+                    "requested_card_name": card_name,
+                    "available_cards": self._list_function_cards_brief(from_player.function_cards),
+                }
+                if len(matched_cards) > 1:
+                    error_payload["error"] = f"{from_player.name} 的功能卡名称引用不唯一 {card_name}"
+                    error_payload["matched_cards"] = self._list_function_cards_brief(matched_cards)
+                return error_payload
+            if id(card) in selected_from_cards:
+                return {"error": f"{from_player.name} 的交易功能卡重复: {card_name}"}
+            selected_from_cards.add(id(card))
             from_cards.append(card)
         
-        to_cards = []
-        for card_id in to_offers.get("card_ids", []):
-            card = next((c for c in to_player.function_cards if c.id == card_id), None)
+        to_cards: list[FunctionCard] = []
+        selected_to_cards: set[int] = set()
+        for card_name in to_offers.get("card_names", []):
+            card, matched_cards, id_reference_used = self._resolve_player_function_card_reference(
+                to_player, card_name
+            )
+            if id_reference_used:
+                return {
+                    "error": f"{to_player.name} 的交易功能卡必须使用名称，不能使用功能卡ID",
+                    "requested_card_name": card_name,
+                    "available_cards": self._list_function_cards_brief(to_player.function_cards),
+                }
             if card is None:
-                return {"error": f"{to_player.name} 没有功能卡 {card_id}"}
+                error_payload = {
+                    "error": f"{to_player.name} 没有功能卡 {card_name}",
+                    "requested_card_name": card_name,
+                    "available_cards": self._list_function_cards_brief(to_player.function_cards),
+                }
+                if len(matched_cards) > 1:
+                    error_payload["error"] = f"{to_player.name} 的功能卡名称引用不唯一 {card_name}"
+                    error_payload["matched_cards"] = self._list_function_cards_brief(matched_cards)
+                return error_payload
+            if id(card) in selected_to_cards:
+                return {"error": f"{to_player.name} 的交易功能卡重复: {card_name}"}
+            selected_to_cards.add(id(card))
             to_cards.append(card)
         
         # 执行交易
@@ -1425,14 +1911,14 @@ class GameManager:
     def sell_artifact_to_system(
         self,
         player_id: str,
-        artifact_id: str,
+        artifact_name: str,
     ) -> dict:
         """
         玩家出售文物给系统
         
         Args:
             player_id: 玩家ID
-            artifact_id: 文物ID
+            artifact_name: 文物名称
             
         Returns:
             出售结果
@@ -1444,9 +1930,25 @@ class GameManager:
         if player is None:
             return {"error": f"玩家 {player_id} 不存在"}
         
-        artifact = next((a for a in player.artifacts if a.id == artifact_id), None)
+        artifact, matched_artifacts, id_reference_used = self._resolve_player_artifact_reference(
+            player, artifact_name
+        )
+        if id_reference_used:
+            return {
+                "error": "出售文物必须使用文物名称，不能使用文物ID",
+                "requested_artifact_name": artifact_name,
+                "available_artifacts": self._list_artifacts_brief(player.artifacts),
+            }
         if artifact is None:
-            return {"error": f"玩家没有文物 {artifact_id}"}
+            error_payload: dict[str, object] = {
+                "error": f"玩家没有文物 {artifact_name}",
+                "requested_artifact_name": artifact_name,
+                "available_artifacts": self._list_artifacts_brief(player.artifacts),
+            }
+            if len(matched_artifacts) > 1:
+                error_payload["error"] = f"文物名称引用不唯一 {artifact_name}"
+                error_payload["matched_artifacts"] = self._list_artifacts_brief(matched_artifacts)
+            return error_payload
         
         # 计算出售价格
         era_key = artifact.era.value
@@ -1470,8 +1972,8 @@ class GameManager:
             "success": True,
             "player_id": player_id,
             "player_name": player.name,
-            "artifact_id": artifact_id,
             "artifact_name": artifact.name,
+            "requested_artifact_name": artifact_name,
             "sell_price": base_price,
             "era": era_key,
             "multiplier": multiplier,
@@ -1505,7 +2007,6 @@ class GameManager:
             if stability < 15:
                 sell_price = max(0, sell_price - 5)
             artifacts_info.append({
-                "id": artifact.id,
                 "name": artifact.name,
                 "era": era_key,
                 "base_value": artifact.base_value,
@@ -1515,7 +2016,6 @@ class GameManager:
         cards_info = []
         for card in player.function_cards:
             cards_info.append({
-                "id": card.id,
                 "name": card.name,
                 "effect": card.effect,
             })

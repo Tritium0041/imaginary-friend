@@ -30,6 +30,15 @@ class _FakeToolUseBlock:
 class _FakeResponse:
     stop_reason: str
     content: list
+    usage: object | None = None
+
+
+@dataclass
+class _FakeUsage:
+    input_tokens: int
+    output_tokens: int
+    cache_creation_input_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
 
 
 class _FakeMessagesAPI:
@@ -96,11 +105,15 @@ def test_waiting_tool_use_message_keeps_structured_content(monkeypatch):
     assert "等待玩家行动" in first_result
     assert len(client.messages.calls) == 1
 
-    assistant_entry = agent.session.messages[-1]
+    assistant_entry = next(msg for msg in reversed(agent.session.messages) if msg.role == "assistant")
     assert assistant_entry.role == "assistant"
     assert isinstance(assistant_entry.content, list)
     assert assistant_entry.content[1]["type"] == "tool_use"
     assert assistant_entry.content[1]["name"] == "request_player_action"
+    tool_result_entry = agent.session.messages[-1]
+    assert tool_result_entry.role == "user"
+    assert isinstance(tool_result_entry.content, list)
+    assert tool_result_entry.content[0]["type"] == "tool_result"
 
     agent.process("我出价 10")
     assert len(client.messages.calls) == 2
@@ -240,3 +253,91 @@ def test_player_agent_decide_tolerates_none_highest_bid(monkeypatch):
     result = agent.decide("请决定是否出价", game_state)
     assert result["player_id"] == "player_1"
     assert result["action"] == {"type": "pass"}
+
+
+def test_player_agent_decide_ignores_thinking_block(monkeypatch):
+    """回归测试：首个 block 为 thinking 时，decide 不应因 .text 崩溃。"""
+    monkeypatch.setattr(gm_agent_mod.anthropic, "Anthropic", lambda **_kwargs: object())
+
+    class _Identity:
+        @staticmethod
+        def get_system_prompt_addition():
+            return "测试身份"
+
+    agent = gm_agent_mod.PlayerAgent(
+        player_id="player_1",
+        identity=_Identity(),
+    )
+
+    class _FakeThinkingBlock:
+        type = "thinking"
+        thinking = "先分析局势"
+
+    class _FakeResp:
+        content = [_FakeThinkingBlock(), _FakeTextBlock("我出价 12 金币")]
+
+    class _FakeMessages:
+        @staticmethod
+        def create(**_kwargs):
+            return _FakeResp()
+
+    class _FakeClient:
+        messages = _FakeMessages()
+
+    agent.client = _FakeClient()
+    game_state = {
+        "current_round": 1,
+        "current_phase": "auction",
+        "players": {
+            "player_1": {"money": 20, "victory_points": 0, "artifacts": [], "function_cards": []},
+            "player_2": {"money": 20, "victory_points": 0, "artifacts": [], "function_cards": []},
+        },
+        "auction_pool": [],
+    }
+
+    result = agent.decide("请决定是否出价", game_state)
+    assert result["player_id"] == "player_1"
+    assert result["message"] == "我出价 12 金币"
+    assert result["action"] == {"type": "bid", "amount": 12}
+
+
+def test_usage_is_accumulated_across_tool_use_roundtrip(monkeypatch):
+    responses = [
+        _FakeResponse(
+            stop_reason="tool_use",
+            content=[
+                _FakeTextBlock("调用工具中"),
+                _FakeToolUseBlock(
+                    id="call_3",
+                    name="get_game_state",
+                    input={"include_private": True},
+                ),
+            ],
+            usage=_FakeUsage(
+                input_tokens=120,
+                output_tokens=24,
+                cache_creation_input_tokens=40,
+                cache_read_input_tokens=10,
+            ),
+        ),
+        _FakeResponse(
+            stop_reason="end_turn",
+            content=[_FakeTextBlock("完成")],
+            usage=_FakeUsage(
+                input_tokens=80,
+                output_tokens=16,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=8,
+            ),
+        ),
+    ]
+    agent, _client = _build_agent(monkeypatch, responses)
+    monkeypatch.setattr(agent, "_execute_tool", lambda _name, _args: {"success": True})
+
+    agent.process("继续")
+    assert agent.session is not None
+    assert agent.session.api_request_count == 2
+    assert agent.session.api_input_tokens == 200
+    assert agent.session.api_output_tokens == 40
+    assert agent.session.api_cache_creation_input_tokens == 40
+    assert agent.session.api_cache_read_input_tokens == 18

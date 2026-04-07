@@ -251,6 +251,74 @@ select:focus {
   border-style: dashed;
 }
 
+.hand-list {
+  display: grid;
+  gap: 10px;
+}
+
+.hand-empty {
+  font-size: 13px;
+  color: #93a3cb;
+  border: 1px dashed #3a4a74;
+  border-radius: 10px;
+  padding: 14px;
+  text-align: center;
+  background: #16213e;
+}
+
+.hand-card {
+  border: 1px solid #334066;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #141d35;
+}
+
+.hand-card-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.hand-card-name {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.2;
+  color: #eef3ff;
+  font-weight: 700;
+  letter-spacing: 0.1px;
+}
+
+.hand-card-tag {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #3f4f7a;
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  line-height: 1.2;
+  color: #9cb0dd;
+  background: #1b2747;
+}
+
+.hand-card-desc {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #d5def6;
+  word-break: break-word;
+}
+
+.hand-card-effect {
+  margin-top: 4px;
+  padding-left: 8px;
+  border-left: 2px solid #3d4f7f;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #9caed7;
+  word-break: break-word;
+}
+
 .chat-box {
   border: 1px solid var(--border);
   border-radius: 10px;

@@ -34,6 +34,8 @@ const els = {
   stability: document.getElementById("stability"),
   contextLength: document.getElementById("context-length"),
   playersList: document.getElementById("players-list"),
+  viewerHandCount: document.getElementById("viewer-hand-count"),
+  viewerHandList: document.getElementById("viewer-hand-list"),
   auctionItems: document.getElementById("auction-items"),
   startupProgressWrap: document.getElementById("startup-progress-wrap"),
   startupProgressLabel: document.getElementById("startup-progress-label"),
@@ -334,6 +336,57 @@ function renderPlayers(players = {}, currentPlayerId = null) {
   els.playersList.appendChild(frag);
 }
 
+function renderViewerHand(cards = []) {
+  const handCards = Array.isArray(cards) ? cards : [];
+  if (els.viewerHandCount) {
+    els.viewerHandCount.textContent = `${handCards.length} 张`;
+  }
+  if (!els.viewerHandList) return;
+
+  if (!handCards.length) {
+    els.viewerHandList.innerHTML = '<div class="hand-empty">暂无手牌</div>';
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  for (const cardInfo of handCards) {
+    const row = document.createElement("div");
+    row.className = "hand-card";
+
+    const cardTop = document.createElement("div");
+    cardTop.className = "hand-card-top";
+
+    const cardName = document.createElement("h4");
+    cardName.className = "hand-card-name";
+    cardName.textContent = cardInfo?.name || cardInfo?.id || "未知功能卡";
+
+    const tag = document.createElement("span");
+    tag.className = "hand-card-tag";
+    tag.textContent = "功能卡";
+
+    cardTop.append(cardName, tag);
+
+    const desc = (cardInfo?.description || "").trim();
+    const effect = (cardInfo?.effect || "").trim();
+    const detail = document.createElement("div");
+    detail.className = "hand-card-desc";
+    detail.textContent = desc || "无描述";
+
+    row.append(cardTop, detail);
+
+    if (effect) {
+      const effectLine = document.createElement("div");
+      effectLine.className = "hand-card-effect";
+      effectLine.textContent = effect;
+      row.appendChild(effectLine);
+    }
+
+    frag.appendChild(row);
+  }
+  els.viewerHandList.innerHTML = "";
+  els.viewerHandList.appendChild(frag);
+}
+
 function renderAuctionPool(items = []) {
   if (!items.length) {
     els.auctionItems.innerHTML = '<div class="empty-card">暂无拍卖物品</div>';
@@ -367,16 +420,26 @@ function renderState(payload) {
   els.phase.textContent = translatePhase(payload.current_phase);
   els.stability.textContent = `${payload.stability ?? 100}%`;
   const metrics = payload.context_metrics || {};
+  const apiTotalTokens = Number.isFinite(metrics.api_total_tokens) ? metrics.api_total_tokens : null;
+  const apiInputTokens = Number.isFinite(metrics.api_input_tokens) ? metrics.api_input_tokens : null;
+  const apiOutputTokens = Number.isFinite(metrics.api_output_tokens) ? metrics.api_output_tokens : null;
+  const apiRequestCount = Number.isFinite(metrics.api_request_count) ? metrics.api_request_count : 0;
   const estTokens = Number.isFinite(metrics.estimated_tokens) ? metrics.estimated_tokens : null;
-  const maxResponse = Number.isFinite(metrics.max_response_tokens) ? metrics.max_response_tokens : null;
-  if (estTokens !== null) {
-    els.contextLength.textContent = maxResponse !== null
-      ? `≈${estTokens} tokens · max ${maxResponse}`
-      : `≈${estTokens} tokens`;
+
+  if (apiTotalTokens !== null && apiRequestCount > 0) {
+    const parts = [`${apiTotalTokens} tokens`];
+    if (apiInputTokens !== null && apiOutputTokens !== null) {
+      parts.push(`in ${apiInputTokens} · out ${apiOutputTokens}`);
+    }
+    parts.push(`${apiRequestCount} req`);
+    els.contextLength.textContent = parts.join(" · ");
+  } else if (estTokens !== null) {
+    els.contextLength.textContent = `≈${estTokens} tokens`;
   } else {
     els.contextLength.textContent = "-";
   }
   renderPlayers(payload.players, payload.current_player_id ?? payload.current_player);
+  renderViewerHand(payload.viewer_function_cards ?? []);
   renderAuctionPool(payload.auction_pool ?? []);
 }
 

@@ -179,11 +179,35 @@ def _build_context_metrics(runtime: GameRuntime) -> dict[str, int]:
         estimated_chars += len(message_text)
         estimated_tokens += _estimate_tokens_from_text(message_text) + 4
 
+    api_request_count = int(getattr(session, "api_request_count", 0) or 0)
+    api_input_tokens = int(getattr(session, "api_input_tokens", 0) or 0)
+    api_output_tokens = int(getattr(session, "api_output_tokens", 0) or 0)
+    api_cache_creation_input_tokens = int(
+        getattr(session, "api_cache_creation_input_tokens", 0) or 0
+    )
+    api_cache_read_input_tokens = int(
+        getattr(session, "api_cache_read_input_tokens", 0) or 0
+    )
+
+    api_request_count = max(0, api_request_count)
+    api_input_tokens = max(0, api_input_tokens)
+    api_output_tokens = max(0, api_output_tokens)
+    api_cache_creation_input_tokens = max(0, api_cache_creation_input_tokens)
+    api_cache_read_input_tokens = max(0, api_cache_read_input_tokens)
+
+    api_total_tokens = api_input_tokens + api_output_tokens
+
     return {
         "message_count": message_count,
         "estimated_chars": estimated_chars,
         "estimated_tokens": estimated_tokens,
         "max_response_tokens": int(getattr(runtime.gm.config, "max_tokens", 0) or 0),
+        "api_request_count": api_request_count,
+        "api_input_tokens": api_input_tokens,
+        "api_output_tokens": api_output_tokens,
+        "api_total_tokens": api_total_tokens,
+        "api_cache_creation_input_tokens": api_cache_creation_input_tokens,
+        "api_cache_read_input_tokens": api_cache_read_input_tokens,
     }
 
 
@@ -195,6 +219,36 @@ def _build_state_snapshot(runtime: GameRuntime) -> dict[str, Any]:
         return state
     state_payload = dict(state)
     state_payload["context_metrics"] = _build_context_metrics(runtime)
+
+    viewer_player_id: Optional[str] = None
+    viewer_function_cards: list[dict[str, str]] = []
+    game_state = getattr(runtime.game_mgr, "game_state", None)
+    players = getattr(game_state, "players", {}) if game_state is not None else {}
+    if isinstance(players, dict):
+        for player_id, player in players.items():
+            if not getattr(player, "is_human", False):
+                continue
+            viewer_player_id = str(player_id)
+            cards = list(getattr(player, "function_cards", []) or [])
+            for card in cards:
+                if hasattr(card, "model_dump"):
+                    card_data = card.model_dump()
+                elif isinstance(card, dict):
+                    card_data = card
+                else:
+                    continue
+                viewer_function_cards.append(
+                    {
+                        "id": str(card_data.get("id", "")),
+                        "name": str(card_data.get("name", "")),
+                        "description": str(card_data.get("description", "")),
+                        "effect": str(card_data.get("effect", "")),
+                    }
+                )
+            break
+
+    state_payload["viewer_player_id"] = viewer_player_id
+    state_payload["viewer_function_cards"] = viewer_function_cards
     return state_payload
 
 
@@ -502,6 +556,16 @@ def _build_html_page() -> str:
           <input id="action-input" type="text" placeholder="输入你的行动，例如：我出价 24" />
           <button id="send-btn" class="btn-primary" type="submit">发送</button>
         </form>
+      </article>
+
+      <article class="panel">
+        <div class="panel-title-row">
+          <h2>我的手牌</h2>
+          <span id="viewer-hand-count" class="badge">0 张</span>
+        </div>
+        <div id="viewer-hand-list" class="hand-list">
+          <div class="hand-empty">暂无手牌</div>
+        </div>
       </article>
 
       <article class="panel">

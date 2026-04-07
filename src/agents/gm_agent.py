@@ -47,6 +47,11 @@ class GameSession:
     player_agents: dict[str, "PlayerAgent"] = field(default_factory=dict)
     is_waiting_for_human: bool = False
     pending_action: Optional[str] = None
+    api_request_count: int = 0
+    api_input_tokens: int = 0
+    api_output_tokens: int = 0
+    api_cache_creation_input_tokens: int = 0
+    api_cache_read_input_tokens: int = 0
 
 
 class GMAgent:
@@ -92,6 +97,34 @@ class GMAgent:
             "content": message,
         }
         self.on_output(payload)
+
+    def _record_response_usage(self, response: Any):
+        """累积 Anthropic usage，供 API 层展示真实上下文消耗。"""
+        if self.session is None:
+            return
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+
+        def _to_non_negative_int(value: Any) -> int:
+            try:
+                return max(0, int(value or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        self.session.api_request_count += 1
+        self.session.api_input_tokens += _to_non_negative_int(
+            getattr(usage, "input_tokens", 0)
+        )
+        self.session.api_output_tokens += _to_non_negative_int(
+            getattr(usage, "output_tokens", 0)
+        )
+        self.session.api_cache_creation_input_tokens += _to_non_negative_int(
+            getattr(usage, "cache_creation_input_tokens", 0)
+        )
+        self.session.api_cache_read_input_tokens += _to_non_negative_int(
+            getattr(usage, "cache_read_input_tokens", 0)
+        )
     
     def _define_tools(self) -> list[dict]:
         """定义 GM 可用的工具"""
@@ -131,11 +164,11 @@ class GMAgent:
                     "type": "object",
                     "properties": {
                         "item_type": {"type": "string", "enum": ["artifact", "card"]},
-                        "item_id": {"type": "string"},
+                        "item_name": {"type": "string", "description": "必须填写文物或功能卡名称，禁止填写ID"},
                         "from_location": {"type": "string"},
                         "to_location": {"type": "string"}
                     },
-                    "required": ["item_type", "item_id", "from_location", "to_location"]
+                    "required": ["item_type", "item_name", "from_location", "to_location"]
                 }
             },
             {
@@ -225,10 +258,10 @@ class GMAgent:
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "event_id": {"type": "string"},
+                        "event_name": {"type": "string", "description": "事件名称，禁止填写事件ID"},
                         "refill_area": {"type": "boolean", "default": True}
                     },
-                    "required": ["event_id"]
+                    "required": ["event_name"]
                 }
             },
             {
@@ -238,13 +271,13 @@ class GMAgent:
                     "type": "object",
                     "properties": {
                         "player_id": {"type": "string"},
-                        "card_id": {"type": "string"},
+                        "card_name": {"type": "string", "description": "功能卡名称，禁止填写功能卡ID"},
                         "target_player_id": {"type": "string"},
                         "target_era": {"type": "string", "enum": ["ancient", "modern", "future"]},
                         "secondary_era": {"type": "string", "enum": ["ancient", "modern", "future"]},
                         "multiplier_delta": {"type": "number", "default": 0.5}
                     },
-                    "required": ["player_id", "card_id"]
+                    "required": ["player_id", "card_name"]
                 }
             },
             {
@@ -254,10 +287,10 @@ class GMAgent:
                     "type": "object",
                     "properties": {
                         "player_id": {"type": "string"},
-                        "auction_item_id": {"type": "string"},
+                        "auction_item_name": {"type": "string", "description": "拍卖文物名称，禁止填写文物ID"},
                         "bid_amount": {"type": "integer"}
                     },
-                    "required": ["player_id", "auction_item_id", "bid_amount"]
+                    "required": ["player_id", "auction_item_name", "bid_amount"]
                 }
             },
             {
@@ -266,9 +299,9 @@ class GMAgent:
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "auction_item_id": {"type": "string"}
+                        "auction_item_name": {"type": "string", "description": "拍卖文物名称，禁止填写文物ID"}
                     },
-                    "required": ["auction_item_id"]
+                    "required": ["auction_item_name"]
                 }
             },
             {
@@ -331,9 +364,9 @@ class GMAgent:
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "auction_item_id": {"type": "string", "description": "拍卖物品标准ID（artifact.id），例如 anc_05；禁止使用 artifact_1 等别名"}
+                        "auction_item_name": {"type": "string", "description": "拍卖文物名称，禁止填写文物ID"}
                     },
-                    "required": ["auction_item_id"]
+                    "required": ["auction_item_name"]
                 }
             },
             {
@@ -342,11 +375,11 @@ class GMAgent:
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "auction_item_id": {"type": "string"},
+                        "auction_item_name": {"type": "string", "description": "拍卖文物名称，禁止填写文物ID"},
                         "player_id": {"type": "string"},
                         "bid_amount": {"type": "integer"}
                     },
-                    "required": ["auction_item_id", "player_id", "bid_amount"]
+                    "required": ["auction_item_name", "player_id", "bid_amount"]
                 }
             },
             {
@@ -355,9 +388,9 @@ class GMAgent:
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "auction_item_id": {"type": "string"}
+                        "auction_item_name": {"type": "string", "description": "拍卖文物名称，禁止填写文物ID"}
                     },
-                    "required": ["auction_item_id"]
+                    "required": ["auction_item_name"]
                 }
             },
             {
@@ -389,8 +422,8 @@ class GMAgent:
                             "description": "发起方提供的物品",
                             "properties": {
                                 "money": {"type": "integer", "default": 0},
-                                "artifact_ids": {"type": "array", "items": {"type": "string"}},
-                                "card_ids": {"type": "array", "items": {"type": "string"}}
+                                "artifact_names": {"type": "array", "items": {"type": "string"}},
+                                "card_names": {"type": "array", "items": {"type": "string"}}
                             }
                         },
                         "to_offers": {
@@ -398,8 +431,8 @@ class GMAgent:
                             "description": "接收方提供的物品",
                             "properties": {
                                 "money": {"type": "integer", "default": 0},
-                                "artifact_ids": {"type": "array", "items": {"type": "string"}},
-                                "card_ids": {"type": "array", "items": {"type": "string"}}
+                                "artifact_names": {"type": "array", "items": {"type": "string"}},
+                                "card_names": {"type": "array", "items": {"type": "string"}}
                             }
                         }
                     },
@@ -413,9 +446,9 @@ class GMAgent:
                     "type": "object",
                     "properties": {
                         "player_id": {"type": "string"},
-                        "artifact_id": {"type": "string"}
+                        "artifact_name": {"type": "string", "description": "文物名称，禁止填写文物ID"}
                     },
-                    "required": ["player_id", "artifact_id"]
+                    "required": ["player_id", "artifact_name"]
                 }
             },
             {
@@ -480,7 +513,7 @@ class GMAgent:
         elif name == "transfer_item":
             result = self.game_mgr.transfer_item(
                 args["item_type"],
-                args["item_id"],
+                args["item_name"],
                 args["from_location"],
                 args["to_location"]
             )
@@ -516,13 +549,13 @@ class GMAgent:
             )
         elif name == "resolve_event":
             result = self.game_mgr.resolve_event(
-                args["event_id"],
+                args["event_name"],
                 args.get("refill_area", True),
             )
         elif name == "play_function_card":
             result = self.game_mgr.play_function_card(
                 args["player_id"],
-                args["card_id"],
+                args["card_name"],
                 args.get("target_player_id"),
                 args.get("target_era"),
                 args.get("secondary_era"),
@@ -531,11 +564,11 @@ class GMAgent:
         elif name == "record_sealed_bid":
             result = self.game_mgr.record_sealed_bid(
                 args["player_id"],
-                args["auction_item_id"],
+                args["auction_item_name"],
                 args["bid_amount"]
             )
         elif name == "reveal_sealed_bids":
-            result = self.game_mgr.reveal_sealed_bids(args["auction_item_id"])
+            result = self.game_mgr.reveal_sealed_bids(args["auction_item_name"])
         elif name == "set_current_player":
             result = self.game_mgr.set_current_player(args["player_id"])
         elif name == "request_player_action":
@@ -554,15 +587,15 @@ class GMAgent:
             result = {"success": True}
         # 新增工具处理
         elif name == "get_auction_state":
-            result = self.game_mgr.get_auction_state(args["auction_item_id"])
+            result = self.game_mgr.get_auction_state(args["auction_item_name"])
         elif name == "update_open_auction_bid":
             result = self.game_mgr.update_open_auction_bid(
-                args["auction_item_id"],
+                args["auction_item_name"],
                 args["player_id"],
                 args["bid_amount"]
             )
         elif name == "finalize_open_auction":
-            result = self.game_mgr.finalize_open_auction(args["auction_item_id"])
+            result = self.game_mgr.finalize_open_auction(args["auction_item_name"])
         elif name == "get_players_for_action":
             result = self.game_mgr.get_players_for_action(args.get("action_type", "general"))
         elif name == "execute_trade":
@@ -575,7 +608,7 @@ class GMAgent:
         elif name == "sell_artifact_to_system":
             result = self.game_mgr.sell_artifact_to_system(
                 args["player_id"],
-                args["artifact_id"]
+                args["artifact_name"]
             )
         elif name == "get_tradeable_assets":
             result = self.game_mgr.get_tradeable_assets(args["player_id"])
@@ -754,12 +787,45 @@ class GMAgent:
             tools=self.tools,
             messages=messages_for_api,
         )
+        self._record_response_usage(response)
         gm_logger.info("Claude response received (stop_reason=%s)", response.stop_reason)
         
         # 处理响应
         return self._process_response(response)
     
-    def _process_response(self, response) -> str:
+    def _latest_user_text_message(self) -> str:
+        if not self.session:
+            return ""
+        for message in reversed(self.session.messages):
+            if message.role != "user":
+                continue
+            if isinstance(message.content, str):
+                return message.content
+        return ""
+
+    def _should_enforce_play_function_card_tool_use(
+        self,
+        content_blocks: list[Any],
+        enforcement_attempts: int,
+    ) -> bool:
+        if enforcement_attempts > 0:
+            return False
+        latest_user_text = self._latest_user_text_message().strip().lower()
+        if not latest_user_text:
+            return False
+        if any(neg in latest_user_text for neg in ("不使用功能卡", "不用功能卡", "不打出功能卡", "不发动功能卡")):
+            return False
+        requested_card_play = (
+            ("功能卡" in latest_user_text and any(v in latest_user_text for v in ("使用", "打出", "发动")))
+            or "play card" in latest_user_text
+            or "use card" in latest_user_text
+        )
+        if not requested_card_play:
+            return False
+        has_tool_use = any(getattr(block, "type", None) == "tool_use" for block in content_blocks)
+        return not has_tool_use
+
+    def _process_response(self, response, enforcement_attempts: int = 0) -> str:
         """处理 API 响应"""
         result_text = ""
         game_id = self.session.game_id if self.session else None
@@ -794,12 +860,20 @@ class GMAgent:
                         self.session.messages.append(
                             Message(role="assistant", content=assistant_content_serialized)
                         )
+                        if tool_results:
+                            self.session.messages.append(
+                                Message(role="user", content=tool_results)
+                            )
                         return result_text
             
             # 添加助手消息和工具结果
             self.session.messages.append(
                 Message(role="assistant", content=assistant_content_serialized)
             )
+            if tool_results:
+                self.session.messages.append(
+                    Message(role="user", content=tool_results)
+                )
             
             # 继续对话
             messages_for_api = [
@@ -807,7 +881,6 @@ class GMAgent:
                 for m in self.session.messages
                 if m.role != "system"
             ]
-            messages_for_api.append({"role": "user", "content": tool_results})
             
             system_content = next(
                 (m.content for m in self.session.messages if m.role == "system"),
@@ -822,15 +895,55 @@ class GMAgent:
                 tools=self.tools,
                 messages=messages_for_api,
             )
+            self._record_response_usage(response)
             gm_logger.info("Claude follow-up received (stop_reason=%s)", response.stop_reason)
         
+        final_content = self._serialize_assistant_content(response.content)
+        if self._should_enforce_play_function_card_tool_use(response.content, enforcement_attempts):
+            gm_logger.warning("Card play narration without tool_use detected; requesting correction")
+            self.session.messages.append(
+                Message(role="assistant", content=final_content if final_content else result_text)
+            )
+            self.session.messages.append(
+                Message(
+                    role="user",
+                    content=(
+                        "你刚才在叙述中处理了功能卡，但没有调用 play_function_card 工具。"
+                        "请基于当前状态重新回复：若玩家尝试使用功能卡，必须先调用 play_function_card 完成结算；"
+                        "禁止仅文字描述用卡结果。"
+                    ),
+                )
+            )
+            messages_for_api = [
+                {"role": m.role, "content": m.content}
+                for m in self.session.messages
+                if m.role != "system"
+            ]
+            system_content = next(
+                (m.content for m in self.session.messages if m.role == "system"),
+                RULES_PROMPT
+            )
+            followup = self.client.messages.create(
+                model=self.config.model,
+                max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
+                system=system_content,
+                tools=self.tools,
+                messages=messages_for_api,
+            )
+            self._record_response_usage(followup)
+            gm_logger.info(
+                "Claude correction follow-up received (stop_reason=%s)",
+                followup.stop_reason,
+            )
+            return self._process_response(followup, enforcement_attempts=enforcement_attempts + 1)
+
         # 最终文本响应
         for block in response.content:
             if block.type == "text":
                 result_text += block.text
                 self._emit_text(block.text)
         
-        final_content = self._serialize_assistant_content(response.content)
         self.session.messages.append(
             Message(role="assistant", content=final_content if final_content else result_text)
         )
@@ -886,6 +999,24 @@ class PlayerAgent:
 - 根据文物价值和时代倍率评估是否值得购买
 - 注意观察其他玩家的行为模式
 """
+
+    def _extract_response_text(self, content_blocks: Any) -> str:
+        """从 Anthropic blocks 中提取文本，忽略 thinking/tool_use 等非文本块。"""
+        if not content_blocks:
+            return ""
+        texts: list[str] = []
+        for block in content_blocks:
+            block_type = getattr(block, "type", None)
+            if block_type == "text":
+                text = getattr(block, "text", "")
+                if text:
+                    texts.append(str(text))
+                continue
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text", "")
+                if text:
+                    texts.append(str(text))
+        return "\n".join(texts).strip()
     
     def decide(self, context: str, game_state: dict) -> dict:
         """做出决策"""
@@ -968,7 +1099,7 @@ GM 请求你行动: {context}
             messages=[{"role": "user", "content": prompt}]
         )
         
-        response_text = response.content[0].text if response.content else ""
+        response_text = self._extract_response_text(getattr(response, "content", []))
         
         # 记录到记忆
         self.memory.append(f"行动: {context} -> {response_text[:100]}...")

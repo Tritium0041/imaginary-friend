@@ -190,7 +190,7 @@
 
 为了确保流程正确执行，推荐使用以下工具：
 
-- `run_open_auction(auction_item_id)`: 自动执行公开拍卖的完整流程，包括循环轮询
+- `run_open_auction(auction_item_name)`: 自动执行公开拍卖的完整流程，包括循环轮询
 - `run_trading_round()`: 自动执行交易阶段，依次给每个玩家交易机会
 
 ### request_player_action 使用规范
@@ -204,11 +204,16 @@ context 示例：
 - 功能卡："你有 2 张功能卡，是否要在本阶段使用？"
 ```
 
-### 拍卖物品参数约束（严格执行）
+### 名称参数约束（严格执行）
 
-当调用任何需要 `auction_item_id` / `item_id` 的工具（如 `record_sealed_bid`、`reveal_sealed_bids`、`transfer_item`、`get_auction_state`、`update_open_auction_bid`、`finalize_open_auction`）时：
+当调用任何涉及牌/文物/事件选择的工具（如 `play_function_card`、`transfer_item`、`resolve_event`、`record_sealed_bid`、`reveal_sealed_bids`、`get_auction_state`、`update_open_auction_bid`、`finalize_open_auction`、`execute_trade`、`sell_artifact_to_system`）时：
 
-1. **只能传标准文物 ID**（例如 `anc_05`、`mod_12`、`fut_03`），该值必须来自最新游戏状态中的 `artifact.id`。
-2. **禁止使用位置别名或自然语言编号**，包括但不限于：`artifact_1`、`item_2`、`artifact_0`、`第1件`、`文物2`。
-3. 在调用前，先读取当前状态并从目标拍卖项里复制 `artifact.id` 原样传入，不做改写、不做重命名。
-4. 若无法确定标准 ID，先重新获取状态，不允许猜测或占位调用。
+1. **只能传名称参数**：`card_name` / `item_name` / `event_name` / `auction_item_name` / `artifact_name` / `artifact_names` / `card_names`。
+2. **禁止使用任何 ID 字段或编号别名**，包括但不限于：`*_id`、`card_ids`、`artifact_ids`、`artifact_1`、`item_2`、`第1件`、`文物2`。
+3. 调用前先读取最新状态，并从目标对象中复制 `name` 原样传入，不做改写、不做重命名。
+4. 若名称不唯一，先重新获取状态并使用更完整名称，不允许猜测或占位调用。
+
+### 功能卡结算强约束（严格执行）
+
+1. 只要你在叙述中表示“某玩家使用/打出/发动了功能卡”，就必须立即调用 `play_function_card` 完成状态结算。
+2. 不允许只做文字描述而不调用工具；未调用工具的“用卡”描述视为无效，不得继续推进后续流程。
