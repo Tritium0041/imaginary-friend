@@ -478,10 +478,8 @@ async function startGame() {
     model: els.model.value.trim() || "claude-sonnet-4-20250514",
   };
 
-  const gameDef = els.gameDef ? els.gameDef.value : "";
-  if (gameDef) {
-    body.game_definition_name = gameDef;
-  }
+  const gameDef = els.gameDef ? els.gameDef.value : "chronos_auction";
+  body.game_definition_name = gameDef || "chronos_auction";
 
   try {
     const res = await fetch("/api/games", {
@@ -679,13 +677,28 @@ hideProgress(progressTargets.reconnect);
     const data = await res.json();
     const select = els.gameDef;
     if (!select) return;
+    select.innerHTML = "";
     for (const def of data.definitions || []) {
       const opt = document.createElement("option");
       opt.value = def.id || def.name || "";
-      opt.textContent = `${def.name || def.id}（通用引擎）`;
+      opt.textContent = def.name || def.id;
+      select.appendChild(opt);
+    }
+    if (!select.options.length) {
+      const opt = document.createElement("option");
+      opt.value = "chronos_auction";
+      opt.textContent = "时空拍卖行";
       select.appendChild(opt);
     }
   } catch (e) {
     console.warn("加载游戏定义列表失败:", e);
+    const select = els.gameDef;
+    if (select) {
+      select.innerHTML = "";
+      const opt = document.createElement("option");
+      opt.value = "chronos_auction";
+      opt.textContent = "时空拍卖行";
+      select.appendChild(opt);
+    }
   }
 })();

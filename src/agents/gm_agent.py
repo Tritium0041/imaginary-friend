@@ -1,31 +1,36 @@
 """
 GM Agent 实现 - 游戏主控
 负责流程推进、规则裁定、状态管理
-支持两种模式:
-  - 经典模式: 使用 GameManager 硬编码工具（向后兼容）
-  - 通用模式: 传入 GameDefinition，用 ToolGenerator/ToolRouter/PromptGenerator 驱动
+使用通用引擎: GameDefinition → ToolGenerator/ToolRouter/PromptGenerator → UniversalGameManager
 """
 from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
+import random
 from typing import Optional, Callable, Any
 from dataclasses import dataclass, field
 import anthropic
 
-from ..tools.game_tools import game_manager, GameManager
-from ..models import GamePhase, get_random_identities
 from ..utils import bind_context
 
 
-# 加载规则 Prompt
-RULES_PROMPT_PATH = Path(__file__).parent / "rules_prompt.md"
-RULES_PROMPT = RULES_PROMPT_PATH.read_text(encoding="utf-8") if RULES_PROMPT_PATH.exists() else ""
 logger = logging.getLogger(__name__)
 
 # 需要 GMAgent 直接拦截的特殊工具（不走 ToolRouter）
 _SPECIAL_TOOLS = frozenset({"request_player_action", "ask_human_ruling", "broadcast_message"})
+
+# 通用 AI 性格库 — 不依赖任何特定游戏
+_AI_PERSONALITIES = [
+    {"name": "策略家", "style": "你深思熟虑，善于制定长期计划，决策果断。"},
+    {"name": "冒险家", "style": "你喜欢高风险高回报的决策，直觉敏锐，行动大胆。"},
+    {"name": "外交家", "style": "你圆滑得体，善于谈判与交涉，关注每一个交易机会。"},
+    {"name": "观察者", "style": "你沉着冷静，善于观察对手行为模式，伺机而动。"},
+    {"name": "收藏家", "style": "你对高价值物品情有独钟，愿意为心仪之物出高价。"},
+    {"name": "搅局者", "style": "你喜欢出其不意，有时候破坏对手的计划比自己获胜更有趣。"},
+    {"name": "均衡者", "style": "你追求稳健平衡的发展策略，不把鸡蛋放在一个篮子里。"},
+    {"name": "投机者", "style": "你善于抓住市场波动中的机会，低买高卖是你的信条。"},
+]
 
 
 @dataclass
@@ -61,24 +66,20 @@ class GameSession:
 
 
 class GMAgent:
-    """GM Agent - 游戏主控
-
-    经典模式: 直接传入 GameManager (Chronos Auction House 专用)
-    通用模式: 传入 GameDefinition，自动创建通用引擎全家桶
-    """
+    """GM Agent - 游戏主控（通用引擎）"""
     
     def __init__(
         self, 
+        game_definition: Any,
         config: Optional[GMConfig] = None,
-        game_mgr: Optional[GameManager] = None,
         on_output: Optional[Callable[[str | dict[str, Any]], None]] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        game_definition: Optional[Any] = None,
     ):
         self.config = config or GMConfig()
         self.api_key = api_key
         self.base_url = base_url
+        self.game_definition = game_definition
         
         # 创建 Anthropic 客户端
         client_kwargs = {}
@@ -91,32 +92,16 @@ class GMAgent:
         self.session: Optional[GameSession] = None
         self.on_output = on_output or print
         
-        # 通用模式 vs 经典模式
-        self.is_universal = game_definition is not None
-        self.game_definition = game_definition
-        
-        if self.is_universal:
-            from ..core.tool_generator import ToolGenerator, ToolRouter
-            from ..core.prompt_generator import PromptGenerator
-            from ..core.universal_manager import UniversalGameManager
+        # 通用引擎组件
+        from ..core.tool_generator import ToolGenerator
+        from ..core.prompt_generator import PromptGenerator
+        from ..core.universal_manager import UniversalGameManager
 
-            self.universal_mgr = UniversalGameManager(game_definition)
-            self._tool_gen = ToolGenerator()
-            self._prompt_gen = PromptGenerator()
-            self.game_mgr = None
-            self.tools = self._tool_gen.generate(game_definition)
-            self.tool_router: Optional[Any] = None  # 初始化后创建
-        else:
-            self.game_mgr = game_mgr or game_manager
-            self.universal_mgr = None
-            self.tool_router = None
-            self.tools = self._define_tools()
-
-    def get_active_manager(self):
-        """返回当前使用的游戏管理器（经典 GameManager 或通用 UniversalGameManager）"""
-        if self.is_universal:
-            return self.universal_mgr
-        return self.game_mgr
+        self.universal_mgr = UniversalGameManager(game_definition)
+        self._tool_gen = ToolGenerator()
+        self._prompt_gen = PromptGenerator()
+        self.tools = self._tool_gen.generate(game_definition)
+        self.tool_router: Optional[Any] = None  # 初始化后创建
 
     def _emit_text(self, text: str):
         """发出普通文本消息。"""
@@ -160,344 +145,6 @@ class GMAgent:
             getattr(usage, "cache_read_input_tokens", 0)
         )
     
-    def _define_tools(self) -> list[dict]:
-        """定义 GM 可用的工具"""
-        return [
-            {
-                "name": "get_game_state",
-                "description": "获取当前游戏状态，包括回合数、阶段、玩家资产、拍卖区物品等",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "include_private": {
-                            "type": "boolean",
-                            "description": "是否包含私有信息（如玩家手牌）",
-                            "default": True
-                        }
-                    },
-                    "required": []
-                }
-            },
-            {
-                "name": "update_player_asset",
-                "description": "修改玩家的资金或胜利点数",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "player_id": {"type": "string", "description": "玩家ID"},
-                        "money_delta": {"type": "integer", "description": "资金变化量"},
-                        "vp_delta": {"type": "integer", "description": "VP变化量"}
-                    },
-                    "required": ["player_id"]
-                }
-            },
-            {
-                "name": "transfer_item",
-                "description": "转移文物或功能卡",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "item_type": {"type": "string", "enum": ["artifact", "card"]},
-                        "item_name": {"type": "string", "description": "必须填写文物或功能卡名称，禁止填写ID"},
-                        "from_location": {"type": "string"},
-                        "to_location": {"type": "string"}
-                    },
-                    "required": ["item_type", "item_name", "from_location", "to_location"]
-                }
-            },
-            {
-                "name": "update_global_status",
-                "description": "更新全局游戏状态（稳定性、倍率、阶段、回合）",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "stability_delta": {"type": "integer"},
-                        "era_multiplier_changes": {
-                            "type": "object",
-                            "description": "时代倍率变化，如 {\"ancient\": 0.1}"
-                        },
-                        "new_phase": {
-                            "type": "string",
-                            "enum": [
-                                "setup",
-                                "excavation",
-                                "auction",
-                                "trading",
-                                "buyback",
-                                "event",
-                                "vote",
-                                "stabilize",
-                                "game_over"
-                            ]
-                        },
-                        "next_round": {"type": "boolean"}
-                    },
-                    "required": []
-                }
-            },
-            {
-                "name": "add_artifact_to_pool",
-                "description": "向拍卖区添加文物",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "artifact_id": {"type": "string"},
-                        "name": {"type": "string"},
-                        "era": {"type": "string", "enum": ["ancient", "modern", "future"]},
-                        "base_value": {"type": "integer"},
-                        "auction_type": {"type": "string", "enum": ["open", "sealed"]},
-                        "description": {"type": "string"}
-                    },
-                    "required": ["artifact_id", "name", "era", "base_value"]
-                }
-            },
-            {
-                "name": "draw_function_cards",
-                "description": "为指定玩家抽取功能卡",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "player_id": {"type": "string"},
-                        "count": {"type": "integer", "default": 1}
-                    },
-                    "required": ["player_id"]
-                }
-            },
-            {
-                "name": "refill_auction_pool",
-                "description": "补充拍卖区文物到目标数量",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "target_size": {"type": "integer"},
-                        "extra_slots": {"type": "integer", "default": 0}
-                    },
-                    "required": []
-                }
-            },
-            {
-                "name": "draw_event_to_area",
-                "description": "翻开一张事件卡到事件区",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "max_area_size": {"type": "integer", "default": 2}
-                    },
-                    "required": []
-                }
-            },
-            {
-                "name": "resolve_event",
-                "description": "执行事件区中的事件并结算效果",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "event_name": {"type": "string", "description": "事件名称，禁止填写事件ID"},
-                        "refill_area": {"type": "boolean", "default": True}
-                    },
-                    "required": ["event_name"]
-                }
-            },
-            {
-                "name": "play_function_card",
-                "description": "玩家打出功能卡并执行效果",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "player_id": {"type": "string"},
-                        "card_name": {"type": "string", "description": "功能卡名称，禁止填写功能卡ID"},
-                        "target_player_id": {"type": "string"},
-                        "target_era": {"type": "string", "enum": ["ancient", "modern", "future"]},
-                        "secondary_era": {"type": "string", "enum": ["ancient", "modern", "future"]},
-                        "multiplier_delta": {"type": "number", "default": 0.5}
-                    },
-                    "required": ["player_id", "card_name"]
-                }
-            },
-            {
-                "name": "record_sealed_bid",
-                "description": "记录密封竞标出价",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "player_id": {"type": "string"},
-                        "auction_item_name": {"type": "string", "description": "拍卖文物名称，禁止填写文物ID"},
-                        "bid_amount": {"type": "integer"}
-                    },
-                    "required": ["player_id", "auction_item_name", "bid_amount"]
-                }
-            },
-            {
-                "name": "reveal_sealed_bids",
-                "description": "揭示密封竞标结果",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "auction_item_name": {"type": "string", "description": "拍卖文物名称，禁止填写文物ID"}
-                    },
-                    "required": ["auction_item_name"]
-                }
-            },
-            {
-                "name": "set_current_player",
-                "description": "设置当前行动玩家",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "player_id": {"type": "string"}
-                    },
-                    "required": ["player_id"]
-                }
-            },
-            {
-                "name": "request_player_action",
-                "description": "请求玩家执行行动。对于人类玩家会暂停等待输入，对于AI玩家会调用其决策。",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "player_id": {"type": "string"},
-                        "action_type": {
-                            "type": "string",
-                            "enum": ["bid", "pass", "trade", "play_card", "choose"]
-                        },
-                        "context": {"type": "string", "description": "行动上下文描述"}
-                    },
-                    "required": ["player_id", "action_type", "context"]
-                }
-            },
-            {
-                "name": "ask_human_ruling",
-                "description": "向人类玩家请求规则裁定",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "question": {"type": "string"},
-                        "options": {
-                            "type": "array",
-                            "items": {"type": "string"}
-                        }
-                    },
-                    "required": ["question"]
-                }
-            },
-            {
-                "name": "broadcast_message",
-                "description": "向所有玩家广播消息（游戏播报）",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "message": {"type": "string"}
-                    },
-                    "required": ["message"]
-                }
-            },
-            # 新增工具：公开拍卖相关
-            {
-                "name": "get_auction_state",
-                "description": "获取拍卖物品的当前状态，包括最高出价和出价者",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "auction_item_name": {"type": "string", "description": "拍卖文物名称，禁止填写文物ID"}
-                    },
-                    "required": ["auction_item_name"]
-                }
-            },
-            {
-                "name": "update_open_auction_bid",
-                "description": "更新公开拍卖的出价（记录某玩家的出价）",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "auction_item_name": {"type": "string", "description": "拍卖文物名称，禁止填写文物ID"},
-                        "player_id": {"type": "string"},
-                        "bid_amount": {"type": "integer"}
-                    },
-                    "required": ["auction_item_name", "player_id", "bid_amount"]
-                }
-            },
-            {
-                "name": "finalize_open_auction",
-                "description": "结算公开拍卖：将文物转移给最高出价者，扣除资金，扣减稳定性",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "auction_item_name": {"type": "string", "description": "拍卖文物名称，禁止填写文物ID"}
-                    },
-                    "required": ["auction_item_name"]
-                }
-            },
-            {
-                "name": "get_players_for_action",
-                "description": "获取需要进行某类行动的玩家列表（用于轮询）",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "action_type": {
-                            "type": "string",
-                            "enum": ["auction", "trade", "vote", "stabilize", "general"],
-                            "description": "行动类型"
-                        }
-                    },
-                    "required": []
-                }
-            },
-            # 新增工具：交易相关
-            {
-                "name": "execute_trade",
-                "description": "执行玩家间交易",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "from_player_id": {"type": "string", "description": "发起方玩家ID"},
-                        "to_player_id": {"type": "string", "description": "接收方玩家ID"},
-                        "from_offers": {
-                            "type": "object",
-                            "description": "发起方提供的物品",
-                            "properties": {
-                                "money": {"type": "integer", "default": 0},
-                                "artifact_names": {"type": "array", "items": {"type": "string"}},
-                                "card_names": {"type": "array", "items": {"type": "string"}}
-                            }
-                        },
-                        "to_offers": {
-                            "type": "object",
-                            "description": "接收方提供的物品",
-                            "properties": {
-                                "money": {"type": "integer", "default": 0},
-                                "artifact_names": {"type": "array", "items": {"type": "string"}},
-                                "card_names": {"type": "array", "items": {"type": "string"}}
-                            }
-                        }
-                    },
-                    "required": ["from_player_id", "to_player_id", "from_offers", "to_offers"]
-                }
-            },
-            {
-                "name": "sell_artifact_to_system",
-                "description": "玩家出售文物给系统（出售价格=基础价值×时代倍率，危机区-5）",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "player_id": {"type": "string"},
-                        "artifact_name": {"type": "string", "description": "文物名称，禁止填写文物ID"}
-                    },
-                    "required": ["player_id", "artifact_name"]
-                }
-            },
-            {
-                "name": "get_tradeable_assets",
-                "description": "获取玩家可交易的资产列表（资金、文物、功能卡）",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "player_id": {"type": "string"}
-                    },
-                    "required": ["player_id"]
-                }
-            }
-        ]
-
     def _serialize_assistant_content(self, content_blocks: list[Any]) -> list[dict[str, Any]]:
         """将 SDK block 序列化为 Anthropic messages 可回放格式。"""
         serialized: list[dict[str, Any]] = []
@@ -537,10 +184,28 @@ class GMAgent:
         gm_logger = bind_context(logger, game_id=game_id)
         gm_logger.info("Executing GM tool: %s", name)
 
-        if self.is_universal:
-            result = self._execute_tool_universal(name, args)
+        # 特殊工具拦截
+        if name == "request_player_action":
+            result = self._handle_player_action_request(
+                args["player_id"],
+                args.get("action_type", "general"),
+                args.get("context", ""),
+            )
+        elif name == "ask_human_ruling":
+            result = self._handle_human_ruling_request(
+                args["question"],
+                args.get("options", []),
+            )
+        elif name == "broadcast_message":
+            msg = args.get("message", "")
+            self._emit_text(f"\n🎭 【GM播报】{msg}\n")
+            if self.tool_router:
+                self.tool_router.route("broadcast_message", args)
+            result = {"success": True}
+        elif self.tool_router:
+            result = self.tool_router.route(name, args)
         else:
-            result = self._execute_tool_classic(name, args)
+            result = {"error": f"未知工具: {name}"}
 
         if isinstance(result, dict) and result.get("error"):
             gm_logger.warning("GM tool failed: %s -> %s", name, result.get("error"))
@@ -548,195 +213,13 @@ class GMAgent:
             gm_logger.info("GM tool completed: %s", name)
         return result
 
-    def _execute_tool_universal(self, name: str, args: dict) -> Any:
-        """通用模式: 特殊工具拦截 + ToolRouter"""
-        if name == "request_player_action":
-            return self._handle_player_action_request_universal(
-                args["player_id"],
-                args.get("action_type", "general"),
-                args.get("context", ""),
-            )
-        if name == "ask_human_ruling":
-            return self._handle_human_ruling_request(
-                args["question"],
-                args.get("options", []),
-            )
-        if name == "broadcast_message":
-            msg = args.get("message", "")
-            self._emit_text(f"\n🎭 【GM播报】{msg}\n")
-            if self.tool_router:
-                self.tool_router.route("broadcast_message", args)
-            return {"success": True}
-        # 其余工具走 ToolRouter
-        if self.tool_router:
-            return self.tool_router.route(name, args)
-        return {"error": f"未知工具: {name}"}
-
-    def _execute_tool_classic(self, name: str, args: dict) -> Any:
-        """经典模式: 硬编码工具路由"""
-        if name == "get_game_state":
-            result = self.game_mgr.get_game_state(args.get("include_private", True))
-        elif name == "update_player_asset":
-            result = self.game_mgr.update_player_asset(
-                args["player_id"],
-                args.get("money_delta", 0),
-                args.get("vp_delta", 0)
-            )
-        elif name == "transfer_item":
-            result = self.game_mgr.transfer_item(
-                args["item_type"],
-                args["item_name"],
-                args["from_location"],
-                args["to_location"]
-            )
-        elif name == "update_global_status":
-            result = self.game_mgr.update_global_status(
-                args.get("stability_delta", 0),
-                args.get("era_multiplier_changes"),
-                args.get("new_phase"),
-                args.get("next_round", False)
-            )
-        elif name == "add_artifact_to_pool":
-            result = self.game_mgr.add_artifact_to_pool(
-                args["artifact_id"],
-                args["name"],
-                args["era"],
-                args["base_value"],
-                args.get("auction_type", "open"),
-                args.get("description", "")
-            )
-        elif name == "draw_function_cards":
-            result = self.game_mgr.draw_function_cards(
-                args["player_id"],
-                args.get("count", 1),
-            )
-        elif name == "refill_auction_pool":
-            result = self.game_mgr.refill_auction_pool(
-                args.get("target_size"),
-                args.get("extra_slots", 0),
-            )
-        elif name == "draw_event_to_area":
-            result = self.game_mgr.draw_event_to_area(
-                args.get("max_area_size", 2),
-            )
-        elif name == "resolve_event":
-            result = self.game_mgr.resolve_event(
-                args["event_name"],
-                args.get("refill_area", True),
-            )
-        elif name == "play_function_card":
-            result = self.game_mgr.play_function_card(
-                args["player_id"],
-                args["card_name"],
-                args.get("target_player_id"),
-                args.get("target_era"),
-                args.get("secondary_era"),
-                args.get("multiplier_delta", 0.5),
-            )
-        elif name == "record_sealed_bid":
-            result = self.game_mgr.record_sealed_bid(
-                args["player_id"],
-                args["auction_item_name"],
-                args["bid_amount"]
-            )
-        elif name == "reveal_sealed_bids":
-            result = self.game_mgr.reveal_sealed_bids(args["auction_item_name"])
-        elif name == "set_current_player":
-            result = self.game_mgr.set_current_player(args["player_id"])
-        elif name == "request_player_action":
-            result = self._handle_player_action_request(
-                args["player_id"],
-                args["action_type"],
-                args["context"]
-            )
-        elif name == "ask_human_ruling":
-            result = self._handle_human_ruling_request(
-                args["question"],
-                args.get("options", [])
-            )
-        elif name == "broadcast_message":
-            self._emit_text(f"\n🎭 【GM播报】{args['message']}\n")
-            result = {"success": True}
-        # 新增工具处理
-        elif name == "get_auction_state":
-            result = self.game_mgr.get_auction_state(args["auction_item_name"])
-        elif name == "update_open_auction_bid":
-            result = self.game_mgr.update_open_auction_bid(
-                args["auction_item_name"],
-                args["player_id"],
-                args["bid_amount"]
-            )
-        elif name == "finalize_open_auction":
-            result = self.game_mgr.finalize_open_auction(args["auction_item_name"])
-        elif name == "get_players_for_action":
-            result = self.game_mgr.get_players_for_action(args.get("action_type", "general"))
-        elif name == "execute_trade":
-            result = self.game_mgr.execute_trade(
-                args["from_player_id"],
-                args["to_player_id"],
-                args.get("from_offers", {}),
-                args.get("to_offers", {})
-            )
-        elif name == "sell_artifact_to_system":
-            result = self.game_mgr.sell_artifact_to_system(
-                args["player_id"],
-                args["artifact_name"]
-            )
-        elif name == "get_tradeable_assets":
-            result = self.game_mgr.get_tradeable_assets(args["player_id"])
-        else:
-            result = {"error": f"未知工具: {name}"}
-        return result
-    
     def _handle_player_action_request(
-        self, 
-        player_id: str, 
-        action_type: str, 
-        context: str
-    ) -> dict:
-        """处理玩家行动请求"""
-        player = self.game_mgr.game_state.get_player(player_id)
-        if not player:
-            return {"error": f"玩家 {player_id} 不存在"}
-        
-        if player.is_human:
-            # 人类玩家：设置等待状态
-            self.session.is_waiting_for_human = True
-            self.session.pending_action = action_type
-            self._emit_text(f"\n⏳ 等待 {player.name} 行动: {context}\n")
-            return {
-                "waiting": True,
-                "player_id": player_id,
-                "player_name": player.name,
-                "action_type": action_type,
-                "context": context
-            }
-        else:
-            # AI 玩家：调用 Player Agent
-            agent = self.session.player_agents.get(player_id)
-            if agent:
-                response = agent.decide(context, self.game_mgr.get_game_state())
-                self._emit_ai_message(
-                    player_id=player_id,
-                    player_name=player.name,
-                    message=response["message"],
-                )
-                return {
-                    "player_id": player_id,
-                    "player_name": player.name,
-                    "action": response.get("action"),
-                    "message": response.get("message")
-                }
-            else:
-                return {"error": f"未找到玩家 {player_id} 的 Agent"}
-    
-    def _handle_player_action_request_universal(
         self,
         player_id: str,
         action_type: str,
         context: str,
     ) -> dict:
-        """通用模式下处理玩家行动请求"""
+        """处理玩家行动请求"""
         mgr = self.universal_mgr
         if not mgr or not mgr.game_state:
             return {"error": "游戏尚未初始化"}
@@ -798,18 +281,6 @@ class GMAgent:
         gm_logger = bind_context(logger, game_id=game_id)
         gm_logger.info("Starting game session")
 
-        if self.is_universal:
-            return self._start_game_universal(player_names, game_id)
-        return self._start_game_classic(player_names, game_id)
-
-    def _start_game_universal(
-        self,
-        player_names: list[tuple[str, bool]],
-        game_id: Optional[str] = None,
-    ) -> str:
-        """通用模式启动游戏"""
-        gm_logger = bind_context(logger, game_id=game_id)
-
         result = self.universal_mgr.initialize_game(
             game_id=game_id,
             player_names=player_names,
@@ -827,7 +298,7 @@ class GMAgent:
         # 创建会话
         self.session = GameSession(game_id=game_id)
         gm_logger = bind_context(logger, game_id=game_id)
-        gm_logger.info("Universal game session created")
+        gm_logger.info("Game session created")
 
         # 为 AI 玩家创建 Agent
         self._create_ai_agents(player_names)
@@ -844,7 +315,7 @@ class GMAgent:
         ]
 
         self._emit_text(f"\n🎲 游戏 {game_id} 已创建！（通用引擎 - {self.game_definition.name}）\n")
-        gm_logger.info("Universal game startup announcement sent")
+        gm_logger.info("Game startup announcement sent")
 
         # 触发 GM 开始游戏
         game_def = self.game_definition
@@ -853,77 +324,31 @@ class GMAgent:
             f"游戏已初始化完成。请开始主持 {game_def.name}：从 {first_phase} 开始。"
         )
 
-    def _start_game_classic(
-        self,
-        player_names: list[tuple[str, bool]],
-        game_id: Optional[str] = None,
-    ) -> str:
-        """经典模式启动游戏"""
-        gm_logger = bind_context(logger, game_id=game_id)
-        result = self.game_mgr.initialize_game(
-            game_id=game_id,
-            player_names=player_names,
-        )
-
-        if not result.get("success"):
-            gm_logger.error("Game initialization failed: %s", result.get("error"))
-            return f"初始化失败: {result.get('error')}"
-        
-        game_id = result["game_id"]
-        
-        # 创建会话
-        self.session = GameSession(game_id=game_id)
-        gm_logger = bind_context(logger, game_id=game_id)
-        gm_logger.info("Game session created")
-        
-        # 为 AI 玩家创建 Agent
-        self._create_ai_agents(player_names)
-        
-        # 构建系统提示
-        system_prompt = f"""{RULES_PROMPT}
-
----
-
-## 当前游戏信息
-
-游戏 ID: {game_id}
-玩家列表:
-"""
-        for i, (name, is_human) in enumerate(player_names):
-            player_type = "人类玩家" if is_human else "AI玩家"
-            system_prompt += f"- player_{i}: {name} ({player_type})\n"
-        
-        # 初始消息
-        self.session.messages = [
-            Message(role="system", content=system_prompt)
-        ]
-        
-        self._emit_text(f"\n🎲 游戏 {game_id} 已创建！\n")
-        gm_logger.info("Game startup announcement sent")
-        
-        # 触发 GM 开始游戏
-        return self.process(
-            "游戏已初始化完成（含初始功能卡发放、拍卖区和事件区准备）。"
-            "请开始主持游戏：从挖掘阶段开始，先检查拍卖区是否需要补到玩家数+1件，再进入拍卖阶段。"
-        )
-
     def _create_ai_agents(self, player_names: list[tuple[str, bool]]):
         """为 AI 玩家创建 PlayerAgent"""
         ai_count = sum(1 for _, is_human in player_names if not is_human)
-        if ai_count > 0:
-            identities = get_random_identities(ai_count)
-            ai_idx = 0
-            for i, (name, is_human) in enumerate(player_names):
-                if not is_human:
-                    player_id = f"player_{i}"
-                    self.session.player_agents[player_id] = PlayerAgent(
-                        player_id=player_id,
-                        identity=identities[ai_idx],
-                        model=self.config.model,
-                        api_key=self.api_key,
-                        base_url=self.base_url,
-                    )
-                    ai_idx += 1
+        if ai_count == 0:
+            return
+        personalities = random.sample(
+            _AI_PERSONALITIES,
+            min(ai_count, len(_AI_PERSONALITIES)),
+        )
+        if ai_count > len(personalities):
+            personalities = personalities * ((ai_count // len(personalities)) + 1)
+        ai_idx = 0
+        for i, (name, is_human) in enumerate(player_names):
+            if not is_human:
+                player_id = f"player_{i}"
+                self.session.player_agents[player_id] = PlayerAgent(
+                    player_id=player_id,
+                    player_name=name,
+                    personality=personalities[ai_idx],
+                    game_name=self.game_definition.name,
+                    model=self.config.model,
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                )
+                ai_idx += 1
     
     def process(self, user_input: str) -> str:
         """处理用户输入并推进游戏"""
@@ -949,7 +374,7 @@ class GMAgent:
         
         system_content = next(
             (m.content for m in self.session.messages if m.role == "system"),
-            RULES_PROMPT
+            ""
         )
         
         response = self.client.messages.create(
@@ -1057,7 +482,7 @@ class GMAgent:
             
             system_content = next(
                 (m.content for m in self.session.messages if m.role == "system"),
-                RULES_PROMPT
+                ""
             )
             
             response = self.client.messages.create(
@@ -1094,7 +519,7 @@ class GMAgent:
             ]
             system_content = next(
                 (m.content for m in self.session.messages if m.role == "system"),
-                RULES_PROMPT
+                ""
             )
             followup = self.client.messages.create(
                 model=self.config.model,
@@ -1126,18 +551,22 @@ class GMAgent:
 
 
 class PlayerAgent:
-    """玩家 Agent - AI 对手"""
+    """玩家 Agent - AI 对手（通用版）"""
     
     def __init__(
         self,
         player_id: str,
-        identity: Any,  # AgentIdentity
+        player_name: str,
+        personality: dict[str, str],
+        game_name: str,
         model: str = "claude-sonnet-4-20250514",
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
     ):
         self.player_id = player_id
-        self.identity = identity
+        self.player_name = player_name
+        self.personality = personality
+        self.game_name = game_name
         self.model = model
         
         # 创建 Anthropic 客户端
@@ -1148,29 +577,29 @@ class PlayerAgent:
             client_kwargs["base_url"] = base_url
         self.client = anthropic.Anthropic(**client_kwargs)
         
-        self.memory: list[str] = []  # 简单的局内记忆
+        self.memory: list[str] = []
     
     def _build_system_prompt(self) -> str:
-        """构建 Agent 系统提示"""
-        return f"""你是《时空拍卖行》桌游中的一名AI玩家。
+        """构建通用 Agent 系统提示"""
+        persona = self.personality.get("name", "AI")
+        style = self.personality.get("style", "你是一个理性的决策者。")
+        return f"""你是《{self.game_name}》桌游中的一名AI玩家。
 
-{self.identity.get_system_prompt_addition()}
+你的角色是「{persona}」。
+{style}
 
 ## 行动指南
 
 1. 根据当前游戏状态和你的策略倾向做出决策
 2. 你的思考过程不会被其他玩家看到
 3. 只输出你的行动决定和想说的话
-4. 行动格式示例:
-   - 出价: "我出价 25 金币"
-   - 放弃: "我放弃竞拍"
-   - 交易提议: "我想用 20 金币换你的那件远古花瓶"
+4. 保持角色人设进行游戏
 
 ## 重要规则
 
-- 出价不能超过你的资金
-- 根据文物价值和时代倍率评估是否值得购买
+- 仔细阅读游戏状态，做出合理的决策
 - 注意观察其他玩家的行为模式
+- 根据当前资源和局势灵活调整策略
 """
 
     def _extract_response_text(self, content_blocks: Any) -> str:
@@ -1195,55 +624,18 @@ class PlayerAgent:
         """做出决策"""
         player_state = game_state.get('players', {}).get(self.player_id, {})
         
-        # 构建提示
-        state_summary = f"""
-当前游戏状态:
-- 回合: {game_state.get('current_round', 1)}
-- 阶段: {game_state.get('current_phase', 'unknown')}
-- 你的资金: {player_state.get('money', 0)}
-- 你的VP: {player_state.get('victory_points', 0)}
-"""
-        
-        # 拍卖区信息
-        if game_state.get('auction_pool'):
-            state_summary += "\n拍卖区物品:\n"
-            for item in game_state['auction_pool']:
-                artifact = item.get('artifact', {})
-                highest_bid = item.get('current_highest_bid')
-                if not isinstance(highest_bid, (int, float)):
-                    highest_bid = 0
-                highest_bidder = item.get('current_highest_bidder')
-                bid_info = f", 当前最高出价: {highest_bid}" if highest_bid > 0 else ""
-                bidder_info = f" (出价者: {highest_bidder})" if highest_bidder else ""
-                state_summary += f"  - {artifact.get('name', '未知')} ({artifact.get('era', '?')}): 基础价值 {artifact.get('base_value', 0)}{bid_info}{bidder_info}\n"
-        
-        # 交易相关 - 展示你的可交易资产
-        if "trade" in context.lower() or "交易" in context:
-            state_summary += f"\n你的可交易资产:\n"
-            state_summary += f"  - 资金: {player_state.get('money', 0)}\n"
-            if player_state.get('artifacts'):
-                state_summary += f"  - 文物:\n"
-                for art in player_state['artifacts']:
-                    state_summary += f"    * {art.get('name', '未知')} ({art.get('era', '?')}, 基础价值{art.get('base_value', 0)})\n"
-            if player_state.get('function_cards'):
-                state_summary += f"  - 功能卡: {len(player_state['function_cards'])} 张\n"
-            
-            # 展示其他玩家的基本情况（可能交易对象）
-            state_summary += "\n其他玩家:\n"
-            for pid, pstate in game_state.get('players', {}).items():
-                if pid != self.player_id:
-                    pname = pstate.get('name', pid)
-                    art_count = len(pstate.get('artifacts', []))
-                    state_summary += f"  - {pname}: {pstate.get('money', 0)}资金, {art_count}件文物\n"
-        
-        # 功能卡相关 - 展示你拥有的功能卡
-        if "功能卡" in context or "function card" in context.lower():
-            if player_state.get('function_cards'):
-                state_summary += "\n你的功能卡:\n"
-                for card in player_state['function_cards']:
-                    state_summary += f"  - {card.get('name', '未知')}: {card.get('effect', '无描述')}\n"
-        
-        # 展示其他玩家行动信息（如果有）
+        state_summary = "当前游戏状态:\n"
+        state_summary += f"- 回合: {game_state.get('current_round', 1)}\n"
+        state_summary += f"- 阶段: {game_state.get('current_phase', 'unknown')}\n"
+
+        # 展示玩家资源
+        for key, value in player_state.items():
+            if key in ('name', 'is_human'):
+                continue
+            if isinstance(value, (int, float, str, bool)):
+                state_summary += f"- 你的{key}: {value}\n"
+
+        # 记忆
         if self.memory:
             recent_memory = self.memory[-5:]
             state_summary += "\n近期记忆:\n"
@@ -1255,12 +647,6 @@ class PlayerAgent:
 GM 请求你行动: {context}
 
 请做出你的决策。记住保持你的角色人设。
-
-注意事项:
-- 如果是拍卖，你需要决定是否出价（出价必须高于当前最高出价）或放弃
-- 如果是交易，你可以提议与某位玩家交易、出售文物给系统、或跳过
-- 如果是功能卡，说明你是否使用以及如何使用
-- 如果你决定跳过/放弃，只需说"我放弃"或"我跳过本轮"
 """
         
         # 调用 Claude

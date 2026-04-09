@@ -17,23 +17,42 @@ from src.api import server
 class FakeGMAgent:
     """避免外部模型调用的测试替身。"""
 
-    def __init__(self, config=None, game_mgr=None, on_output=None, api_key=None, base_url=None):
+    def __init__(self, config=None, on_output=None, api_key=None, base_url=None, game_definition=None):
         self.config = config
-        self.game_mgr = game_mgr
         self.on_output = on_output or (lambda _msg: None)
         self.api_key = api_key
         self.base_url = base_url
+        self.game_definition = game_definition
         self.session = None
+        # Fake player objects with is_human attribute
+        _p0 = SimpleNamespace(
+            is_human=True,
+            function_cards=[
+                SimpleNamespace(
+                    model_dump=lambda: {"id": "c1", "name": "Fake Card", "description": "desc", "effect": "effect"}
+                )
+            ],
+            artifacts=[],
+        )
+        _p1 = SimpleNamespace(is_human=False, function_cards=[], artifacts=[])
+        _p2 = SimpleNamespace(is_human=False, function_cards=[], artifacts=[])
+        _players = {"player_0": _p0, "player_1": _p1, "player_2": _p2}
+        self.universal_mgr = SimpleNamespace(
+            get_game_state=lambda: {
+                "current_round": 1,
+                "current_phase": "setup",
+                "players": {
+                    pid: {"name": f"P{i}", "is_human": p.is_human, "artifacts": []}
+                    for i, (pid, p) in enumerate(_players.items())
+                },
+            },
+            game_state=SimpleNamespace(players=_players),
+        )
 
     def start_game(self, player_names, game_id=None):
-        result = self.game_mgr.initialize_game(
-            game_id=game_id or "progress01",
-            player_names=player_names,
-        )
-        if not result.get("success"):
-            raise RuntimeError(result.get("error") or "failed")
+        gid = game_id or "progress01"
         self.session = SimpleNamespace(
-            game_id=result["game_id"],
+            game_id=gid,
             is_waiting_for_human=True,
         )
         self.on_output("fake-startup-message")

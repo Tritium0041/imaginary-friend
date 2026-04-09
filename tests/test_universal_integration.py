@@ -90,19 +90,12 @@ class _FakeAnthropicClient:
 # ---- GMAgent Universal Mode Tests ----
 
 class TestGMAgentUniversalInit:
-    """Test that GMAgent initializes correctly in universal mode."""
+    """Test that GMAgent initializes correctly."""
 
-    def test_universal_mode_flag(self, chronos_def):
+    def test_universal_mode_attributes(self, chronos_def):
         gm = GMAgent(game_definition=chronos_def, on_output=lambda x: None)
-        assert gm.is_universal is True
         assert gm.universal_mgr is not None
-        assert gm.game_mgr is None
-
-    def test_classic_mode_flag(self):
-        gm = GMAgent(on_output=lambda x: None)
-        assert gm.is_universal is False
-        assert gm.universal_mgr is None
-        assert gm.game_mgr is not None
+        assert gm.game_definition is chronos_def
 
     def test_universal_tools_generated(self, chronos_def):
         gm = GMAgent(game_definition=chronos_def, on_output=lambda x: None)
@@ -120,14 +113,6 @@ class TestGMAgentUniversalInit:
         expected_names = {t["name"] for t in expected}
         actual_names = {t["name"] for t in gm.tools}
         assert actual_names == expected_names
-
-    def test_get_active_manager_universal(self, chronos_def):
-        gm = GMAgent(game_definition=chronos_def, on_output=lambda x: None)
-        assert gm.get_active_manager() is gm.universal_mgr
-
-    def test_get_active_manager_classic(self):
-        gm = GMAgent(on_output=lambda x: None)
-        assert gm.get_active_manager() is gm.game_mgr
 
 
 class TestGMAgentUniversalStartGame:
@@ -321,14 +306,14 @@ class TestServerCreateGameIntegration:
         )
         assert req.game_definition_name == "chronos_auction"
 
-    def test_game_create_request_default_none(self):
+    def test_game_create_request_default(self):
         from src.api.server import GameCreateRequest
         req = GameCreateRequest(
             player_name="Alice",
             ai_count=2,
             api_key="test-key",
         )
-        assert req.game_definition_name is None
+        assert req.game_definition_name == "chronos_auction"
 
 
 class TestPromptGeneratorIntegration:

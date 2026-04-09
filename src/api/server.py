@@ -19,7 +19,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..agents import GMConfig, GMAgent
-from ..tools import GameManager
 from ..utils import bind_context, setup_logging
 
 
@@ -31,9 +30,9 @@ class GameCreateRequest(BaseModel):
     api_key: str = ""
     base_url: str = ""
     model: str = "claude-sonnet-4-20250514"
-    game_definition_name: Optional[str] = Field(
-        default=None,
-        description="游戏定义 ID，为空则使用原版时空拍卖行",
+    game_definition_name: str = Field(
+        default="chronos_auction",
+        description="游戏定义 ID",
     )
 
 
@@ -50,10 +49,9 @@ class GameRuntime:
 
     game_id: str
     gm: GMAgent
-    game_mgr: Any  # GameManager (经典) 或 UniversalGameManager (通用)
+    game_mgr: Any  # UniversalGameManager
     config: dict[str, str]
     loop: asyncio.AbstractEventLoop
-    is_universal: bool = False
     action_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     event_queue: asyncio.Queue[dict[str, Any] | None] = field(
         default_factory=lambda: asyncio.Queue(maxsize=256)
@@ -521,7 +519,7 @@ def _build_html_page() -> str:
         <label>
           <span>游戏定义</span>
           <select id="game-def">
-            <option value="">原版时空拍卖行（经典模式）</option>
+            <option value="">加载中...</option>
           </select>
         </label>
       </div>
@@ -697,36 +695,22 @@ async def create_game(request: GameCreateRequest):
 
     record_progress("runtime_preparing", "正在构建游戏运行时", percent=30)
 
-    game_definition = None
-    is_universal = False
-    if request.game_definition_name:
-        from ..core.game_loader import load_game_definition
-        game_definition = load_game_definition(request.game_definition_name)
-        if game_definition is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"未找到游戏定义: {request.game_definition_name}",
-            )
-        is_universal = True
+    from ..core.game_loader import load_game_definition
+    game_definition = load_game_definition(request.game_definition_name)
+    if game_definition is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未找到游戏定义: {request.game_definition_name}",
+        )
 
-    if is_universal:
-        gm = GMAgent(
-            config=GMConfig(model=request.model),
-            on_output=collect_output,
-            api_key=api_key,
-            base_url=request.base_url.strip() or None,
-            game_definition=game_definition,
-        )
-        game_mgr = gm.universal_mgr
-    else:
-        game_mgr = GameManager()
-        gm = GMAgent(
-            config=GMConfig(model=request.model),
-            game_mgr=game_mgr,
-            on_output=collect_output,
-            api_key=api_key,
-            base_url=request.base_url.strip() or None,
-        )
+    gm = GMAgent(
+        config=GMConfig(model=request.model),
+        on_output=collect_output,
+        api_key=api_key,
+        base_url=request.base_url.strip() or None,
+        game_definition=game_definition,
+    )
+    game_mgr = gm.universal_mgr
 
     record_progress("game_initializing", "正在初始化牌局与 GM 会话", percent=55, indeterminate=True)
     try:
@@ -755,7 +739,6 @@ async def create_game(request: GameCreateRequest):
             "model": request.model,
         },
         loop=loop,
-        is_universal=is_universal,
     )
     active_games[game_id] = runtime
     game_logger.info("Game runtime registered")
