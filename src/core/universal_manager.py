@@ -113,19 +113,32 @@ class UniversalGameManager:
     def initialize_game(
         self,
         game_id: str | None = None,
-        player_names: list[str] | None = None,
+        player_names: list | None = None,
         max_rounds: int = 10,
     ) -> dict[str, Any]:
-        """根据 GameDefinition 初始化游戏"""
+        """根据 GameDefinition 初始化游戏。
+
+        player_names 支持两种格式:
+          - list[str]: 纯名称列表（第一个玩家默认为人类）
+          - list[tuple[str, bool]]: (名称, is_human) 列表
+        """
         if game_id is None:
             game_id = str(uuid.uuid4())[:8]
 
         if player_names is None:
             player_names = ["玩家"]
 
-        if len(player_names) < self.game_def.player_count_min:
+        # 统一为 (name, is_human) 格式
+        normalized: list[tuple[str, bool]] = []
+        for i, entry in enumerate(player_names):
+            if isinstance(entry, (list, tuple)) and len(entry) == 2:
+                normalized.append((str(entry[0]), bool(entry[1])))
+            else:
+                normalized.append((str(entry), i == 0))
+
+        if len(normalized) < self.game_def.player_count_min:
             return {"error": f"玩家数量不足，最少需要 {self.game_def.player_count_min} 人"}
-        if len(player_names) > self.game_def.player_count_max:
+        if len(normalized) > self.game_def.player_count_max:
             return {"error": f"玩家数量过多，最多支持 {self.game_def.player_count_max} 人"}
 
         PlayerState = self.models["player_state"]
@@ -134,12 +147,12 @@ class UniversalGameManager:
 
         # 创建玩家
         players = {}
-        for i, name in enumerate(player_names):
+        for i, (name, is_human) in enumerate(normalized):
             pid = f"player_{i}"
             player = PlayerState(
                 id=pid,
                 name=name,
-                is_human=(i == 0),
+                is_human=is_human,
             )
             players[pid] = player
 
@@ -159,11 +172,12 @@ class UniversalGameManager:
         # 初始化牌库
         self._initialize_decks()
 
-        self._add_log(f"游戏 '{self.game_def.name}' 已初始化，{len(player_names)} 位玩家")
+        self._add_log(f"游戏 '{self.game_def.name}' 已初始化，{len(normalized)} 位玩家")
 
         return {
             "status": "initialized",
             "game_id": game_id,
+            "success": True,
             "players": [{"id": pid, "name": p.name} for pid, p in players.items()],
         }
 

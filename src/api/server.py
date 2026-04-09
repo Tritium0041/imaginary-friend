@@ -50,9 +50,10 @@ class GameRuntime:
 
     game_id: str
     gm: GMAgent
-    game_mgr: GameManager
+    game_mgr: Any  # GameManager (经典) 或 UniversalGameManager (通用)
     config: dict[str, str]
     loop: asyncio.AbstractEventLoop
+    is_universal: bool = False
     action_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     event_queue: asyncio.Queue[dict[str, Any] | None] = field(
         default_factory=lambda: asyncio.Queue(maxsize=256)
@@ -216,7 +217,8 @@ def _build_context_metrics(runtime: GameRuntime) -> dict[str, int]:
 
 
 def _build_state_snapshot(runtime: GameRuntime) -> dict[str, Any]:
-    state = runtime.game_mgr.get_game_state()
+    mgr = runtime.game_mgr
+    state = mgr.get_game_state() if mgr else {}
     if not isinstance(state, dict):
         return {"state": state}
     if state.get("error"):
@@ -226,14 +228,21 @@ def _build_state_snapshot(runtime: GameRuntime) -> dict[str, Any]:
 
     viewer_player_id: Optional[str] = None
     viewer_function_cards: list[dict[str, str]] = []
-    game_state = getattr(runtime.game_mgr, "game_state", None)
+
+    # 统一通过 game_state.players 获取玩家信息
+    game_state = getattr(mgr, "game_state", None)
     players = getattr(game_state, "players", {}) if game_state is not None else {}
     if isinstance(players, dict):
         for player_id, player in players.items():
             if not getattr(player, "is_human", False):
                 continue
             viewer_player_id = str(player_id)
-            cards = list(getattr(player, "function_cards", []) or [])
+            # 通用引擎中卡牌字段可能名称不同，安全遍历
+            cards = []
+            for attr in ("function_cards", "cards", "hand"):
+                cards = list(getattr(player, attr, []) or [])
+                if cards:
+                    break
             for card in cards:
                 if hasattr(card, "model_dump"):
                     card_data = card.model_dump()
@@ -457,15 +466,15 @@ def _build_html_page() -> str:
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>时空拍卖行 · 实时对局</title>
+  <title>通用桌游 Agent · 实时对局</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <main class="app-shell">
     <header class="topbar">
       <div>
-        <h1>时空拍卖行</h1>
-        <p>Chronos Auction House · 实时 GM 面板</p>
+        <h1>通用桌游 Agent</h1>
+        <p>Universal Board Game Agent · 实时 GM 面板</p>
       </div>
       <div class="status-row">
         <span id="conn-badge" class="badge badge-offline">未连接</span>
@@ -507,6 +516,12 @@ def _build_html_page() -> str:
             <option value="2">2 个 AI</option>
             <option value="3">3 个 AI</option>
             <option value="4">4 个 AI</option>
+          </select>
+        </label>
+        <label>
+          <span>游戏定义</span>
+          <select id="game-def">
+            <option value="">原版时空拍卖行（经典模式）</option>
           </select>
         </label>
       </div>
@@ -681,14 +696,37 @@ async def create_game(request: GameCreateRequest):
             startup_messages.append(normalized)
 
     record_progress("runtime_preparing", "正在构建游戏运行时", percent=30)
-    game_mgr = GameManager()
-    gm = GMAgent(
-        config=GMConfig(model=request.model),
-        game_mgr=game_mgr,
-        on_output=collect_output,
-        api_key=api_key,
-        base_url=request.base_url.strip() or None,
-    )
+
+    game_definition = None
+    is_universal = False
+    if request.game_definition_name:
+        from ..core.game_loader import load_game_definition
+        game_definition = load_game_definition(request.game_definition_name)
+        if game_definition is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"未找到游戏定义: {request.game_definition_name}",
+            )
+        is_universal = True
+
+    if is_universal:
+        gm = GMAgent(
+            config=GMConfig(model=request.model),
+            on_output=collect_output,
+            api_key=api_key,
+            base_url=request.base_url.strip() or None,
+            game_definition=game_definition,
+        )
+        game_mgr = gm.universal_mgr
+    else:
+        game_mgr = GameManager()
+        gm = GMAgent(
+            config=GMConfig(model=request.model),
+            game_mgr=game_mgr,
+            on_output=collect_output,
+            api_key=api_key,
+            base_url=request.base_url.strip() or None,
+        )
 
     record_progress("game_initializing", "正在初始化牌局与 GM 会话", percent=55, indeterminate=True)
     try:
@@ -717,6 +755,7 @@ async def create_game(request: GameCreateRequest):
             "model": request.model,
         },
         loop=loop,
+        is_universal=is_universal,
     )
     active_games[game_id] = runtime
     game_logger.info("Game runtime registered")

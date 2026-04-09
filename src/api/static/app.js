@@ -23,6 +23,7 @@ const els = {
   model: document.getElementById("model"),
   playerName: document.getElementById("player-name"),
   aiCount: document.getElementById("ai-count"),
+  gameDef: document.getElementById("game-def"),
   actionForm: document.getElementById("action-form"),
   actionInput: document.getElementById("action-input"),
   chatBox: document.getElementById("chat-box"),
@@ -477,6 +478,11 @@ async function startGame() {
     model: els.model.value.trim() || "claude-sonnet-4-20250514",
   };
 
+  const gameDef = els.gameDef ? els.gameDef.value : "";
+  if (gameDef) {
+    body.game_definition_name = gameDef;
+  }
+
   try {
     const res = await fetch("/api/games", {
       method: "POST",
@@ -664,3 +670,22 @@ setConnectionBadge(false);
 hideProgress(progressTargets.create_game);
 hideProgress(progressTargets.action);
 hideProgress(progressTargets.reconnect);
+
+// 加载可用的游戏定义列表
+(async function loadGameDefinitions() {
+  try {
+    const res = await fetch("/api/games/definitions");
+    if (!res.ok) return;
+    const data = await res.json();
+    const select = els.gameDef;
+    if (!select) return;
+    for (const def of data.definitions || []) {
+      const opt = document.createElement("option");
+      opt.value = def.id || def.name || "";
+      opt.textContent = `${def.name || def.id}（通用引擎）`;
+      select.appendChild(opt);
+    }
+  } catch (e) {
+    console.warn("加载游戏定义列表失败:", e);
+  }
+})();

@@ -1,6 +1,9 @@
 """
 GM Agent 实现 - 游戏主控
 负责流程推进、规则裁定、状态管理
+支持两种模式:
+  - 经典模式: 使用 GameManager 硬编码工具（向后兼容）
+  - 通用模式: 传入 GameDefinition，用 ToolGenerator/ToolRouter/PromptGenerator 驱动
 """
 from __future__ import annotations
 
@@ -20,6 +23,9 @@ from ..utils import bind_context
 RULES_PROMPT_PATH = Path(__file__).parent / "rules_prompt.md"
 RULES_PROMPT = RULES_PROMPT_PATH.read_text(encoding="utf-8") if RULES_PROMPT_PATH.exists() else ""
 logger = logging.getLogger(__name__)
+
+# 需要 GMAgent 直接拦截的特殊工具（不走 ToolRouter）
+_SPECIAL_TOOLS = frozenset({"request_player_action", "ask_human_ruling", "broadcast_message"})
 
 
 @dataclass
@@ -55,7 +61,11 @@ class GameSession:
 
 
 class GMAgent:
-    """GM Agent - 游戏主控"""
+    """GM Agent - 游戏主控
+
+    经典模式: 直接传入 GameManager (Chronos Auction House 专用)
+    通用模式: 传入 GameDefinition，自动创建通用引擎全家桶
+    """
     
     def __init__(
         self, 
@@ -64,9 +74,9 @@ class GMAgent:
         on_output: Optional[Callable[[str | dict[str, Any]], None]] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        game_definition: Optional[Any] = None,
     ):
         self.config = config or GMConfig()
-        self.game_mgr = game_mgr or game_manager
         self.api_key = api_key
         self.base_url = base_url
         
@@ -81,8 +91,32 @@ class GMAgent:
         self.session: Optional[GameSession] = None
         self.on_output = on_output or print
         
-        # 工具定义
-        self.tools = self._define_tools()
+        # 通用模式 vs 经典模式
+        self.is_universal = game_definition is not None
+        self.game_definition = game_definition
+        
+        if self.is_universal:
+            from ..core.tool_generator import ToolGenerator, ToolRouter
+            from ..core.prompt_generator import PromptGenerator
+            from ..core.universal_manager import UniversalGameManager
+
+            self.universal_mgr = UniversalGameManager(game_definition)
+            self._tool_gen = ToolGenerator()
+            self._prompt_gen = PromptGenerator()
+            self.game_mgr = None
+            self.tools = self._tool_gen.generate(game_definition)
+            self.tool_router: Optional[Any] = None  # 初始化后创建
+        else:
+            self.game_mgr = game_mgr or game_manager
+            self.universal_mgr = None
+            self.tool_router = None
+            self.tools = self._define_tools()
+
+    def get_active_manager(self):
+        """返回当前使用的游戏管理器（经典 GameManager 或通用 UniversalGameManager）"""
+        if self.is_universal:
+            return self.universal_mgr
+        return self.game_mgr
 
     def _emit_text(self, text: str):
         """发出普通文本消息。"""
@@ -502,6 +536,44 @@ class GMAgent:
         game_id = self.session.game_id if self.session else None
         gm_logger = bind_context(logger, game_id=game_id)
         gm_logger.info("Executing GM tool: %s", name)
+
+        if self.is_universal:
+            result = self._execute_tool_universal(name, args)
+        else:
+            result = self._execute_tool_classic(name, args)
+
+        if isinstance(result, dict) and result.get("error"):
+            gm_logger.warning("GM tool failed: %s -> %s", name, result.get("error"))
+        else:
+            gm_logger.info("GM tool completed: %s", name)
+        return result
+
+    def _execute_tool_universal(self, name: str, args: dict) -> Any:
+        """通用模式: 特殊工具拦截 + ToolRouter"""
+        if name == "request_player_action":
+            return self._handle_player_action_request_universal(
+                args["player_id"],
+                args.get("action_type", "general"),
+                args.get("context", ""),
+            )
+        if name == "ask_human_ruling":
+            return self._handle_human_ruling_request(
+                args["question"],
+                args.get("options", []),
+            )
+        if name == "broadcast_message":
+            msg = args.get("message", "")
+            self._emit_text(f"\n🎭 【GM播报】{msg}\n")
+            if self.tool_router:
+                self.tool_router.route("broadcast_message", args)
+            return {"success": True}
+        # 其余工具走 ToolRouter
+        if self.tool_router:
+            return self.tool_router.route(name, args)
+        return {"error": f"未知工具: {name}"}
+
+    def _execute_tool_classic(self, name: str, args: dict) -> Any:
+        """经典模式: 硬编码工具路由"""
         if name == "get_game_state":
             result = self.game_mgr.get_game_state(args.get("include_private", True))
         elif name == "update_player_asset":
@@ -614,15 +686,6 @@ class GMAgent:
             result = self.game_mgr.get_tradeable_assets(args["player_id"])
         else:
             result = {"error": f"未知工具: {name}"}
-
-        if isinstance(result, dict) and result.get("error"):
-            gm_logger.warning(
-                "GM tool failed: %s -> %s",
-                name,
-                result.get("error"),
-            )
-        else:
-            gm_logger.info("GM tool completed: %s", name)
         return result
     
     def _handle_player_action_request(
@@ -667,6 +730,51 @@ class GMAgent:
             else:
                 return {"error": f"未找到玩家 {player_id} 的 Agent"}
     
+    def _handle_player_action_request_universal(
+        self,
+        player_id: str,
+        action_type: str,
+        context: str,
+    ) -> dict:
+        """通用模式下处理玩家行动请求"""
+        mgr = self.universal_mgr
+        if not mgr or not mgr.game_state:
+            return {"error": "游戏尚未初始化"}
+
+        players = mgr.game_state.players
+        player = players.get(player_id)
+        if not player:
+            return {"error": f"玩家 {player_id} 不存在"}
+
+        if player.is_human:
+            self.session.is_waiting_for_human = True
+            self.session.pending_action = action_type
+            self._emit_text(f"\n⏳ 等待 {player.name} 行动: {context}\n")
+            return {
+                "waiting": True,
+                "player_id": player_id,
+                "player_name": player.name,
+                "action_type": action_type,
+                "context": context,
+            }
+        else:
+            agent = self.session.player_agents.get(player_id)
+            if agent:
+                game_state_dict = mgr.get_game_state()
+                response = agent.decide(context, game_state_dict)
+                self._emit_ai_message(
+                    player_id=player_id,
+                    player_name=player.name,
+                    message=response["message"],
+                )
+                return {
+                    "player_id": player_id,
+                    "player_name": player.name,
+                    "action": response.get("action"),
+                    "message": response.get("message"),
+                }
+            return {"error": f"未找到玩家 {player_id} 的 Agent"}
+
     def _handle_human_ruling_request(self, question: str, options: list[str]) -> dict:
         """处理规则裁定请求"""
         self.session.is_waiting_for_human = True
@@ -689,7 +797,69 @@ class GMAgent:
         """开始新游戏"""
         gm_logger = bind_context(logger, game_id=game_id)
         gm_logger.info("Starting game session")
-        # 初始化游戏状态
+
+        if self.is_universal:
+            return self._start_game_universal(player_names, game_id)
+        return self._start_game_classic(player_names, game_id)
+
+    def _start_game_universal(
+        self,
+        player_names: list[tuple[str, bool]],
+        game_id: Optional[str] = None,
+    ) -> str:
+        """通用模式启动游戏"""
+        gm_logger = bind_context(logger, game_id=game_id)
+
+        result = self.universal_mgr.initialize_game(
+            game_id=game_id,
+            player_names=player_names,
+        )
+        if result.get("error"):
+            gm_logger.error("Game initialization failed: %s", result["error"])
+            return f"初始化失败: {result['error']}"
+
+        game_id = result["game_id"]
+
+        # ToolRouter 需要在 manager 初始化之后创建
+        from ..core.tool_generator import ToolRouter
+        self.tool_router = ToolRouter(self.game_definition, self.universal_mgr)
+
+        # 创建会话
+        self.session = GameSession(game_id=game_id)
+        gm_logger = bind_context(logger, game_id=game_id)
+        gm_logger.info("Universal game session created")
+
+        # 为 AI 玩家创建 Agent
+        self._create_ai_agents(player_names)
+
+        # 用 PromptGenerator 生成系统 Prompt
+        system_prompt = self._prompt_gen.generate(self.game_definition, self.tools)
+        system_prompt += f"\n\n---\n\n## 当前游戏信息\n\n游戏 ID: {game_id}\n玩家列表:\n"
+        for i, (name, is_human) in enumerate(player_names):
+            player_type = "人类玩家" if is_human else "AI玩家"
+            system_prompt += f"- player_{i}: {name} ({player_type})\n"
+
+        self.session.messages = [
+            Message(role="system", content=system_prompt)
+        ]
+
+        self._emit_text(f"\n🎲 游戏 {game_id} 已创建！（通用引擎 - {self.game_definition.name}）\n")
+        gm_logger.info("Universal game startup announcement sent")
+
+        # 触发 GM 开始游戏
+        game_def = self.game_definition
+        first_phase = game_def.phases[0].name if game_def.phases else "第一阶段"
+        return self.process(
+            f"游戏已初始化完成。请开始主持 {game_def.name}：从 {first_phase} 开始。"
+        )
+
+    def _start_game_classic(
+        self,
+        player_names: list[tuple[str, bool]],
+        game_id: Optional[str] = None,
+    ) -> str:
+        """经典模式启动游戏"""
+        gm_logger = bind_context(logger, game_id=game_id)
         result = self.game_mgr.initialize_game(
             game_id=game_id,
             player_names=player_names,
@@ -707,22 +877,7 @@ class GMAgent:
         gm_logger.info("Game session created")
         
         # 为 AI 玩家创建 Agent
-        ai_count = sum(1 for _, is_human in player_names if not is_human)
-        if ai_count > 0:
-            identities = get_random_identities(ai_count)
-            ai_idx = 0
-            for i, (name, is_human) in enumerate(player_names):
-                if not is_human:
-                    player_id = f"player_{i}"
-                    self.session.player_agents[player_id] = PlayerAgent(
-                        player_id=player_id,
-                        identity=identities[ai_idx],
-                        model=self.config.model,
-                        api_key=self.api_key,
-                        base_url=self.base_url,
-                    )
-                    ai_idx += 1
-            gm_logger.info("Initialized AI player agents: %s", ai_count)
+        self._create_ai_agents(player_names)
         
         # 构建系统提示
         system_prompt = f"""{RULES_PROMPT}
@@ -751,6 +906,24 @@ class GMAgent:
             "游戏已初始化完成（含初始功能卡发放、拍卖区和事件区准备）。"
             "请开始主持游戏：从挖掘阶段开始，先检查拍卖区是否需要补到玩家数+1件，再进入拍卖阶段。"
         )
+
+    def _create_ai_agents(self, player_names: list[tuple[str, bool]]):
+        """为 AI 玩家创建 PlayerAgent"""
+        ai_count = sum(1 for _, is_human in player_names if not is_human)
+        if ai_count > 0:
+            identities = get_random_identities(ai_count)
+            ai_idx = 0
+            for i, (name, is_human) in enumerate(player_names):
+                if not is_human:
+                    player_id = f"player_{i}"
+                    self.session.player_agents[player_id] = PlayerAgent(
+                        player_id=player_id,
+                        identity=identities[ai_idx],
+                        model=self.config.model,
+                        api_key=self.api_key,
+                        base_url=self.base_url,
+                    )
+                    ai_idx += 1
     
     def process(self, user_input: str) -> str:
         """处理用户输入并推进游戏"""
