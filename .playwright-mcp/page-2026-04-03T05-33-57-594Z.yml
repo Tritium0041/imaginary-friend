@@ -1,0 +1,144 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic:
+      - generic [ref=e6]:
+        - link "新闻" [ref=e7] [cursor=pointer]:
+          - /url: http://news.baidu.com
+        - link "hao123" [ref=e8] [cursor=pointer]:
+          - /url: https://www.hao123.com?src=from_pc
+        - link "地图" [ref=e9] [cursor=pointer]:
+          - /url: http://map.baidu.com
+        - link "贴吧" [ref=e10] [cursor=pointer]:
+          - /url: http://tieba.baidu.com/
+        - link "视频" [ref=e11] [cursor=pointer]:
+          - /url: https://haokan.baidu.com/?sfrom=baidu-top
+        - link "图片" [ref=e12] [cursor=pointer]:
+          - /url: http://image.baidu.com/
+        - link "网盘" [ref=e13] [cursor=pointer]:
+          - /url: https://pan.baidu.com?from=1026962h
+        - link "文库" [ref=e14] [cursor=pointer]:
+          - /url: https://wenku.baidu.com/?fr=bdpcindex
+        - link "文心" [ref=e15] [cursor=pointer]:
+          - /url: https://chat.baidu.com/search?isShowHello=1&pd=csaitab&setype=csaitab&extParamsJson=%7B%22enter_type%22%3A%22home_tab%22%7D
+        - link "更多" [ref=e17] [cursor=pointer]:
+          - /url: http://www.baidu.com/more/
+      - generic [ref=e18]:
+        - generic [ref=e19] [cursor=pointer]: 设置
+        - link "登录" [ref=e20] [cursor=pointer]:
+          - /url: https://passport.baidu.com/v2/?login&tpl=mn&u=http%3A%2F%2Fwww.baidu.com%2F&sms=5
+    - generic [ref=e23]:
+      - generic [ref=e24]:
+        - img [ref=e25]
+        - generic:
+          - link "点击一下，了解更多":
+            - /url: //www.baidu.com/s?wd=%E7%99%BE%E5%BA%A6%E7%83%AD%E6%90%9C&sa=ire_dl_gh_logo_texing&rsv_dl=igh_logo_pcs
+      - generic [ref=e30]:
+        - generic [ref=e33]:
+          - textbox "泰国女星遭救护员性侵" [active] [ref=e35]
+          - generic [ref=e37]:
+            - generic [ref=e38]:
+              - img [ref=e46] [cursor=pointer]
+              - generic [ref=e49]:
+                - img [ref=e53] [cursor=pointer]
+                - img [ref=e58] [cursor=pointer]
+            - button "百度一下" [ref=e62] [cursor=pointer]
+        - link "复杂问题就找文心助手，深入思考回答更优" [ref=e66] [cursor=pointer]:
+          - /url: https://chat.baidu.com/search?extParams=%7B%22enter_type%22%3A%22home_operate%22%7D&isShowHello=1
+          - img [ref=e67]
+          - generic [ref=e69]: 复杂问题就找文心助手，深入思考回答更优
+      - generic [ref=e72]:
+        - generic [ref=e73]:
+          - link "百度热搜":
+            - /url: https://top.baidu.com/board?platform=pc&sa=pcindex_entry
+            - generic "百度热搜" [ref=e74] [cursor=pointer]: 
+          - generic [ref=e75] [cursor=pointer]:
+            - generic [ref=e76]: 
+            - text: 换一换
+        - list:
+          - listitem [ref=e77]:
+            - link " “千年大计”从一片林起笔" [ref=e78] [cursor=pointer]:
+              - /url: https://www.baidu.com/s?wd=%E2%80%9C%E5%8D%83%E5%B9%B4%E5%A4%A7%E8%AE%A1%E2%80%9D%E4%BB%8E%E4%B8%80%E7%89%87%E6%9E%97%E8%B5%B7%E7%AC%94&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+              - generic [ref=e79]: 
+              - text: “千年大计”从一片林起笔
+          - listitem [ref=e81]:
+            - link "5 4比2！陈幸同晋级8强" [ref=e82] [cursor=pointer]:
+              - /url: https://www.baidu.com/s?wd=4%E6%AF%942%EF%BC%81%E9%99%88%E5%B9%B8%E5%90%8C%E6%99%8B%E7%BA%A78%E5%BC%BA&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+              - generic [ref=e83]: "5"
+              - text: 4比2！陈幸同晋级8强
+            - generic [ref=e84]: 新
+          - listitem [ref=e85]:
+            - link "1 外国人涌入中国洗浴中心" [ref=e86] [cursor=pointer]:
+              - /url: https://www.baidu.com/s?wd=%E5%A4%96%E5%9B%BD%E4%BA%BA%E6%B6%8C%E5%85%A5%E4%B8%AD%E5%9B%BD%E6%B4%97%E6%B5%B4%E4%B8%AD%E5%BF%83&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+              - generic [ref=e87]: "1"
+              - text: 外国人涌入中国洗浴中心
+            - generic [ref=e88]: 新
+          - listitem [ref=e89]:
+            - link "6 伊朗称再次击落美军F-35战斗机" [ref=e90] [cursor=pointer]:
+              - /url: https://www.baidu.com/s?wd=%E4%BC%8A%E6%9C%97%E7%A7%B0%E5%86%8D%E6%AC%A1%E5%87%BB%E8%90%BD%E7%BE%8E%E5%86%9BF-35%E6%88%98%E6%96%97%E6%9C%BA&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+              - generic [ref=e91]: "6"
+              - text: 伊朗称再次击落美军F-35战斗机
+            - generic [ref=e92]: 新
+          - listitem [ref=e93]:
+            - link "2 韩国40岁导演遭围殴致死引众怒" [ref=e94] [cursor=pointer]:
+              - /url: https://www.baidu.com/s?wd=%E9%9F%A9%E5%9B%BD40%E5%B2%81%E5%AF%BC%E6%BC%94%E9%81%AD%E5%9B%B4%E6%AE%B4%E8%87%B4%E6%AD%BB%E5%BC%95%E4%BC%97%E6%80%92&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+              - generic [ref=e95]: "2"
+              - text: 韩国40岁导演遭围殴致死引众怒
+            - generic [ref=e96]: 热
+          - listitem [ref=e97]:
+            - link "7 金正恩与女儿视察宠物商店 现场撸猫" [ref=e98] [cursor=pointer]:
+              - /url: https://www.baidu.com/s?wd=%E9%87%91%E6%AD%A3%E6%81%A9%E4%B8%8E%E5%A5%B3%E5%84%BF%E8%A7%86%E5%AF%9F%E5%AE%A0%E7%89%A9%E5%95%86%E5%BA%97+%E7%8E%B0%E5%9C%BA%E6%92%B8%E7%8C%AB&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+              - generic [ref=e99]: "7"
+              - text: 金正恩与女儿视察宠物商店 现场撸猫
+          - listitem [ref=e101]:
+            - link "3 最大、首艘！中国“超级装备”上新" [ref=e102] [cursor=pointer]:
+              - /url: https://www.baidu.com/s?wd=%E6%9C%80%E5%A4%A7%E3%80%81%E9%A6%96%E8%89%98%EF%BC%81%E4%B8%AD%E5%9B%BD%E2%80%9C%E8%B6%85%E7%BA%A7%E8%A3%85%E5%A4%87%E2%80%9D%E4%B8%8A%E6%96%B0&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+              - generic [ref=e103]: "3"
+              - text: 最大、首艘！中国“超级装备”上新
+          - listitem [ref=e105]:
+            - link "8 “老虎”伍兹被捕画面曝光" [ref=e106] [cursor=pointer]:
+              - /url: https://www.baidu.com/s?wd=%E2%80%9C%E8%80%81%E8%99%8E%E2%80%9D%E4%BC%8D%E5%85%B9%E8%A2%AB%E6%8D%95%E7%94%BB%E9%9D%A2%E6%9B%9D%E5%85%89&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+              - generic [ref=e107]: "8"
+              - text: “老虎”伍兹被捕画面曝光
+            - generic [ref=e108]: 热
+          - listitem [ref=e109]:
+            - link "4 官方回应珠海一大厦有人名下163套房" [ref=e110] [cursor=pointer]:
+              - /url: https://www.baidu.com/s?wd=%E5%AE%98%E6%96%B9%E5%9B%9E%E5%BA%94%E7%8F%A0%E6%B5%B7%E4%B8%80%E5%A4%A7%E5%8E%A6%E6%9C%89%E4%BA%BA%E5%90%8D%E4%B8%8B163%E5%A5%97%E6%88%BF&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+              - generic [ref=e111]: "4"
+              - text: 官方回应珠海一大厦有人名下163套房
+            - generic [ref=e112]: 热
+          - listitem [ref=e113]:
+            - link "9 嘴唇发紫博主被粉丝隔空诊出心脏病" [ref=e114] [cursor=pointer]:
+              - /url: https://www.baidu.com/s?wd=%E5%98%B4%E5%94%87%E5%8F%91%E7%B4%AB%E5%8D%9A%E4%B8%BB%E8%A2%AB%E7%B2%89%E4%B8%9D%E9%9A%94%E7%A9%BA%E8%AF%8A%E5%87%BA%E5%BF%83%E8%84%8F%E7%97%85&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+              - generic [ref=e115]: "9"
+              - text: 嘴唇发紫博主被粉丝隔空诊出心脏病
+    - generic [ref=e118]:
+      - paragraph [ref=e119]:
+        - link "关于百度" [ref=e120] [cursor=pointer]:
+          - /url: //home.baidu.com
+      - paragraph [ref=e121]:
+        - link "About Baidu" [ref=e122] [cursor=pointer]:
+          - /url: http://ir.baidu.com
+      - paragraph [ref=e123]:
+        - link "使用百度前必读" [ref=e124] [cursor=pointer]:
+          - /url: //www.baidu.com/duty
+      - paragraph [ref=e125]:
+        - link "帮助中心" [ref=e126] [cursor=pointer]:
+          - /url: https://help.baidu.com/question?prod_id=1
+      - paragraph [ref=e127]:
+        - link "企业推广" [ref=e128] [cursor=pointer]:
+          - /url: https://e.baidu.com/?refer=1271
+      - paragraph [ref=e129]:
+        - link "京公网安备11000002000001号" [ref=e130] [cursor=pointer]:
+          - /url: http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=11000002000001
+      - paragraph [ref=e131]:
+        - link "京ICP证030173号" [ref=e132] [cursor=pointer]:
+          - /url: https://beian.miit.gov.cn
+      - paragraph [ref=e133]: 互联网新闻信息服务许可证11220180008
+      - generic [ref=e134]: 
+      - generic [ref=e135]: 
+  - generic [ref=e136]:
+    - generic:
+      - generic:
+        - generic:
+          - img
+    - img [ref=e141] [cursor=pointer]
