@@ -152,6 +152,7 @@ class GameDefinition(BaseModel):
     3. 通过 Web UI 可视化编辑
     """
     # 元信息
+    id: str = ""
     name: str
     name_en: str = ""
     description: str = ""

@@ -1,5 +1,5 @@
 """
-FastAPI 后端 - WebSocket 实时游戏接口（支持 GM 流式输出）
+FastAPI 后端 - WebSocket 实时游戏接口（支持 GM 流式输出 + 通用桌游引擎）
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -31,6 +31,10 @@ class GameCreateRequest(BaseModel):
     api_key: str = ""
     base_url: str = ""
     model: str = "claude-sonnet-4-20250514"
+    game_definition_name: Optional[str] = Field(
+        default=None,
+        description="游戏定义 ID，为空则使用原版时空拍卖行",
+    )
 
 
 class GameActionRequest(BaseModel):
@@ -611,9 +615,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="时空拍卖行 API",
-    description="《时空拍卖行》桌游 Agent 系统后端接口",
-    version="0.2.0",
+    title="通用桌游 Agent API",
+    description="通用桌游 Agent 系统后端接口 — 支持时空拍卖行及自定义桌游",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -622,7 +626,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/")
 async def root():
-    return {"message": "时空拍卖行 API", "version": "0.2.0"}
+    return {"message": "通用桌游 Agent API", "version": "0.3.0"}
 
 
 @app.post("/api/games")
@@ -732,6 +736,99 @@ async def create_game(request: GameCreateRequest):
         "state": _build_state_snapshot(runtime),
         "is_waiting_for_human": gm.session.is_waiting_for_human,
     }
+
+
+# ========== 通用桌游引擎端点（必须在 /api/games/{game_id} 之前注册） ==========
+
+
+@app.get("/api/games/definitions")
+async def list_game_definitions():
+    """列出所有可用的 GameDefinition"""
+    from ..core.game_loader import discover_games
+    games = discover_games()
+    return {"definitions": games}
+
+
+@app.get("/api/games/definitions/{game_id}")
+async def get_game_definition(game_id: str):
+    """获取指定游戏的 GameDefinition"""
+    from ..core.game_loader import load_game_definition
+    game_def = load_game_definition(game_id)
+    if game_def is None:
+        raise HTTPException(status_code=404, detail=f"游戏定义不存在: {game_id}")
+    return game_def.model_dump()
+
+
+@app.put("/api/games/definitions/{game_id}")
+async def update_game_definition(game_id: str, body: dict[str, Any]):
+    """更新（微调）指定游戏的 GameDefinition"""
+    from ..core.game_loader import load_game_definition, save_game_definition
+    from ..core.game_definition import GameDefinition
+
+    existing = load_game_definition(game_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"游戏定义不存在: {game_id}")
+
+    merged = existing.model_dump()
+    merged.update(body)
+    merged["id"] = game_id
+
+    try:
+        updated = GameDefinition(**merged)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"GameDefinition 校验失败: {exc}") from exc
+
+    save_game_definition(updated)
+    return {"status": "ok", "game_id": game_id, "name": updated.name}
+
+
+@app.post("/api/games/upload-rules")
+async def upload_rules(file: UploadFile):
+    """上传 PDF 规则书，解析后返回 GameDefinition"""
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="请上传 PDF 文件")
+
+    content = await file.read()
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="服务器未配置 ANTHROPIC_API_KEY")
+
+    try:
+        from ..parser.pdf_extractor import PdfExtractor
+        from ..parser.llm_extractor import LlmExtractor
+        from ..parser.cache_manager import CacheManager
+        from ..core.game_loader import save_game_definition
+        import anthropic
+
+        extractor = PdfExtractor()
+        doc = extractor.extract_from_bytes(content, file.filename)
+
+        cache = CacheManager()
+        cached = cache.get_game_def(doc.sha256)
+        if cached:
+            return {
+                "status": "cached",
+                "game_definition": cached.model_dump(),
+                "message": f"使用缓存: {cached.name}",
+            }
+
+        client = anthropic.Anthropic(api_key=api_key)
+        llm = LlmExtractor(client=client)
+        game_def = await asyncio.to_thread(llm.extract, doc.full_text)
+        save_game_definition(game_def)
+        cache.set_game_def(doc.sha256, game_def)
+
+        return {
+            "status": "ok",
+            "game_definition": game_def.model_dump(),
+            "message": f"成功解析: {game_def.name}",
+        }
+    except Exception as exc:
+        logger.exception("Rules upload failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"解析失败: {exc}") from exc
 
 
 @app.get("/api/games/{game_id}")
