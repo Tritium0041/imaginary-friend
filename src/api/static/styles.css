@@ -189,6 +189,102 @@ select:focus {
   }
 }
 
+/* ---- Upload Section ---- */
+
+.upload-section {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.upload-label {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: 10px;
+  padding: 24px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.drop-zone:hover,
+.drop-zone.drag-over {
+  border-color: var(--accent);
+  background: rgba(242, 180, 74, 0.06);
+}
+
+.drop-zone-inner p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.drop-zone-inner a {
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.drop-icon {
+  font-size: 28px;
+}
+
+.upload-file-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.upload-file-info span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-soft);
+}
+
+.btn-sm {
+  margin-top: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.btn-cancel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-soft);
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.btn-cancel:hover {
+  background: var(--panel-soft);
+}
+
+#upload-result {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+#upload-result.success {
+  color: var(--ok);
+}
+
+#upload-result.error {
+  color: var(--danger);
+}
+
 .kv-list > div {
   display: flex;
   justify-content: space-between;

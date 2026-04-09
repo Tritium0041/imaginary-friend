@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -523,6 +523,31 @@ def _build_html_page() -> str:
           </select>
         </label>
       </div>
+      <div class="upload-section">
+        <p class="upload-label">📄 导入新桌游（上传 PDF 规则书）</p>
+        <div id="drop-zone" class="drop-zone">
+          <input id="pdf-file" type="file" accept=".pdf" hidden />
+          <div class="drop-zone-inner">
+            <span class="drop-icon">📁</span>
+            <p>将 PDF 拖拽到此处，或 <a id="browse-link" href="#">点击选择文件</a></p>
+          </div>
+        </div>
+        <div id="upload-file-info" class="upload-file-info hidden">
+          <span id="upload-filename"></span>
+          <button id="upload-btn" class="btn-primary btn-sm" type="button">上传并解析</button>
+          <button id="upload-cancel-btn" class="btn-cancel btn-sm" type="button">取消</button>
+        </div>
+        <div id="upload-progress-wrap" class="progress-wrap hidden">
+          <div class="progress-meta">
+            <span id="upload-progress-label">正在解析规则书...</span>
+            <span id="upload-progress-value">处理中</span>
+          </div>
+          <div class="progress-track">
+            <div id="upload-progress-bar" class="progress-bar indeterminate"></div>
+          </div>
+        </div>
+        <p id="upload-result" class="hidden"></p>
+      </div>
       <button id="start-btn" class="btn-primary">开始游戏</button>
       <div id="startup-progress-wrap" class="progress-wrap hidden">
         <div class="progress-meta">
@@ -805,7 +830,7 @@ async def update_game_definition(game_id: str, body: dict[str, Any]):
 
 
 @app.post("/api/games/upload-rules")
-async def upload_rules(file: UploadFile):
+async def upload_rules(file: UploadFile, api_key: str = Form(default="")):
     """上传 PDF 规则书，解析后返回 GameDefinition"""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="请上传 PDF 文件")
@@ -814,9 +839,9 @@ async def upload_rules(file: UploadFile):
     if len(content) == 0:
         raise HTTPException(status_code=400, detail="文件为空")
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not api_key:
-        raise HTTPException(status_code=400, detail="服务器未配置 ANTHROPIC_API_KEY")
+    resolved_key = (api_key or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not resolved_key:
+        raise HTTPException(status_code=400, detail="请提供 API Key（页面输入或服务器环境变量）")
 
     try:
         from ..parser.pdf_extractor import PdfExtractor
@@ -837,7 +862,7 @@ async def upload_rules(file: UploadFile):
                 "message": f"使用缓存: {cached.name}",
             }
 
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(api_key=resolved_key)
         llm = LlmExtractor(client=client)
         game_def = await asyncio.to_thread(llm.extract, doc.full_text)
         save_game_definition(game_def)

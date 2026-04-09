@@ -50,6 +50,19 @@ const els = {
   reconnectProgressLabel: document.getElementById("reconnect-progress-label"),
   reconnectProgressValue: document.getElementById("reconnect-progress-value"),
   reconnectProgressBar: document.getElementById("reconnect-progress-bar"),
+  // Upload elements
+  dropZone: document.getElementById("drop-zone"),
+  pdfFile: document.getElementById("pdf-file"),
+  browseLink: document.getElementById("browse-link"),
+  uploadFileInfo: document.getElementById("upload-file-info"),
+  uploadFilename: document.getElementById("upload-filename"),
+  uploadBtn: document.getElementById("upload-btn"),
+  uploadCancelBtn: document.getElementById("upload-cancel-btn"),
+  uploadProgressWrap: document.getElementById("upload-progress-wrap"),
+  uploadProgressLabel: document.getElementById("upload-progress-label"),
+  uploadProgressValue: document.getElementById("upload-progress-value"),
+  uploadProgressBar: document.getElementById("upload-progress-bar"),
+  uploadResult: document.getElementById("upload-result"),
 };
 
 const progressTargets = {
@@ -670,7 +683,7 @@ hideProgress(progressTargets.action);
 hideProgress(progressTargets.reconnect);
 
 // 加载可用的游戏定义列表
-(async function loadGameDefinitions() {
+async function loadGameDefinitions(selectValue) {
   try {
     const res = await fetch("/api/games/definitions");
     if (!res.ok) return;
@@ -690,6 +703,9 @@ hideProgress(progressTargets.reconnect);
       opt.textContent = "时空拍卖行";
       select.appendChild(opt);
     }
+    if (selectValue) {
+      select.value = selectValue;
+    }
   } catch (e) {
     console.warn("加载游戏定义列表失败:", e);
     const select = els.gameDef;
@@ -701,4 +717,138 @@ hideProgress(progressTargets.reconnect);
       select.appendChild(opt);
     }
   }
+}
+loadGameDefinitions();
+
+// ---- PDF 上传逻辑 ----
+
+(function initUpload() {
+  const { dropZone, pdfFile, browseLink, uploadFileInfo, uploadFilename,
+          uploadBtn, uploadCancelBtn, uploadProgressWrap, uploadProgressLabel,
+          uploadProgressValue, uploadProgressBar, uploadResult } = els;
+  if (!dropZone) return;
+
+  let selectedFile = null;
+
+  function resetUpload() {
+    selectedFile = null;
+    pdfFile.value = "";
+    uploadFileInfo.classList.add("hidden");
+    uploadProgressWrap.classList.add("hidden");
+    uploadResult.classList.add("hidden");
+    uploadResult.className = "hidden";
+    uploadResult.textContent = "";
+  }
+
+  function showFile(file) {
+    selectedFile = file;
+    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+    uploadFilename.textContent = `${file.name} (${sizeMB} MB)`;
+    uploadFileInfo.classList.remove("hidden");
+    uploadResult.classList.add("hidden");
+  }
+
+  // Drag & drop
+  dropZone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    dropZone.classList.add("drag-over");
+  });
+  dropZone.addEventListener("dragleave", () => {
+    dropZone.classList.remove("drag-over");
+  });
+  dropZone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dropZone.classList.remove("drag-over");
+    const file = e.dataTransfer.files[0];
+    if (file && file.name.toLowerCase().endsWith(".pdf")) {
+      showFile(file);
+    } else {
+      uploadResult.textContent = "⚠️ 请上传 PDF 文件";
+      uploadResult.className = "error";
+      uploadResult.classList.remove("hidden");
+    }
+  });
+
+  // Click to browse
+  dropZone.addEventListener("click", () => pdfFile.click());
+  if (browseLink) {
+    browseLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      pdfFile.click();
+    });
+  }
+  pdfFile.addEventListener("change", () => {
+    if (pdfFile.files.length > 0) {
+      showFile(pdfFile.files[0]);
+    }
+  });
+
+  // Cancel
+  uploadCancelBtn.addEventListener("click", resetUpload);
+
+  // Upload
+  uploadBtn.addEventListener("click", async () => {
+    if (!selectedFile) return;
+
+    const apiKey = els.apiKey ? els.apiKey.value.trim() : "";
+
+    uploadBtn.disabled = true;
+    uploadCancelBtn.classList.add("hidden");
+    uploadProgressWrap.classList.remove("hidden");
+    uploadProgressLabel.textContent = "正在上传并解析规则书...（约 1-2 分钟）";
+    uploadProgressValue.textContent = "处理中";
+    uploadProgressBar.className = "progress-bar indeterminate";
+    uploadResult.classList.add("hidden");
+
+    try {
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      if (apiKey) {
+        formData.append("api_key", apiKey);
+      }
+
+      const res = await fetch("/api/games/upload-rules", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      uploadProgressWrap.classList.add("hidden");
+
+      if (!res.ok) {
+        uploadResult.textContent = `❌ ${data.detail || "上传失败"}`;
+        uploadResult.className = "error";
+        uploadResult.classList.remove("hidden");
+        uploadBtn.disabled = false;
+        uploadCancelBtn.classList.remove("hidden");
+        return;
+      }
+
+      const gameDef = data.game_definition || {};
+      const gameId = gameDef.id || gameDef.name || "";
+      const gameName = gameDef.name || gameId;
+      const statusMsg = data.status === "cached" ? "（使用缓存）" : "";
+
+      uploadResult.textContent = `✅ 成功导入: ${gameName} ${statusMsg}`;
+      uploadResult.className = "success";
+      uploadResult.classList.remove("hidden");
+
+      // Refresh game list and select the new game
+      await loadGameDefinitions(gameId);
+
+      // Hide upload file info
+      uploadFileInfo.classList.add("hidden");
+      uploadBtn.disabled = false;
+      uploadCancelBtn.classList.remove("hidden");
+    } catch (err) {
+      uploadProgressWrap.classList.add("hidden");
+      uploadResult.textContent = `❌ 上传出错: ${err.message}`;
+      uploadResult.className = "error";
+      uploadResult.classList.remove("hidden");
+      uploadBtn.disabled = false;
+      uploadCancelBtn.classList.remove("hidden");
+    }
+  });
 })();
