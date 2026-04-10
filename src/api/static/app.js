@@ -807,6 +807,14 @@ loadGameDefinitions();
       if (apiKey) {
         formData.append("api_key", apiKey);
       }
+      const baseUrl = els.baseUrl ? els.baseUrl.value.trim() : "";
+      if (baseUrl) {
+        formData.append("base_url", baseUrl);
+      }
+      const modelVal = els.model ? els.model.value.trim() : "";
+      if (modelVal) {
+        formData.append("model", modelVal);
+      }
 
       const res = await fetch("/api/games/upload-rules", {
         method: "POST",

@@ -660,6 +660,16 @@ def _build_manage_page() -> str:
           <input id="manage-api-key" type="password" placeholder="sk-ant-..." />
         </label>
       </div>
+      <div class="upload-form-row two-col-form">
+        <label class="upload-api-key-label">
+          <span>Base URL（可选）</span>
+          <input id="manage-base-url" type="text" placeholder="https://api.anthropic.com" />
+        </label>
+        <label class="upload-api-key-label">
+          <span>模型名称</span>
+          <input id="manage-model" type="text" value="claude-sonnet-4-20250514" />
+        </label>
+      </div>
       <div id="manage-drop-zone" class="drop-zone">
         <input id="manage-pdf-file" type="file" accept=".pdf" hidden />
         <div class="drop-zone-inner">
@@ -931,7 +941,12 @@ async def delete_game_definition(game_id: str):
 
 
 @app.post("/api/games/upload-rules")
-async def upload_rules(file: UploadFile, api_key: str = Form(default="")):
+async def upload_rules(
+    file: UploadFile,
+    api_key: str = Form(default=""),
+    base_url: str = Form(default=""),
+    model: str = Form(default=""),
+):
     """上传 PDF 规则书，解析后返回 GameDefinition"""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="请上传 PDF 文件")
@@ -943,6 +958,9 @@ async def upload_rules(file: UploadFile, api_key: str = Form(default="")):
     resolved_key = (api_key or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not resolved_key:
         raise HTTPException(status_code=400, detail="请提供 API Key（页面输入或服务器环境变量）")
+
+    resolved_base_url = (base_url or "").strip() or None
+    resolved_model = (model or "").strip() or "claude-sonnet-4-20250514"
 
     try:
         from ..parser.pdf_extractor import PdfExtractor
@@ -963,8 +981,11 @@ async def upload_rules(file: UploadFile, api_key: str = Form(default="")):
                 "message": f"使用缓存: {cached.name}",
             }
 
-        client = anthropic.Anthropic(api_key=resolved_key)
-        llm = LlmExtractor(client=client)
+        client_kwargs: dict[str, Any] = {"api_key": resolved_key}
+        if resolved_base_url:
+            client_kwargs["base_url"] = resolved_base_url
+        client = anthropic.Anthropic(**client_kwargs)
+        llm = LlmExtractor(client=client, model=resolved_model)
         game_def = await asyncio.to_thread(llm.extract, doc.full_text)
         save_game_definition(game_def)
         cache.set_game_def(doc.sha256, game_def)

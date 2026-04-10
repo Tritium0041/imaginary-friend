@@ -196,6 +196,8 @@ $("#detail-modal .modal-backdrop").addEventListener("click", () =>
   const progressWrap = $("#manage-upload-progress-wrap");
   const result = $("#manage-upload-result");
   const apiKeyInput = $("#manage-api-key");
+  const baseUrlInput = $("#manage-base-url");
+  const modelInput = $("#manage-model");
 
   let selectedFile = null;
 
@@ -252,6 +254,10 @@ $("#detail-modal .modal-backdrop").addEventListener("click", () =>
     formData.append("file", selectedFile);
     const key = apiKeyInput.value.trim();
     if (key) formData.append("api_key", key);
+    const baseUrl = baseUrlInput.value.trim();
+    if (baseUrl) formData.append("base_url", baseUrl);
+    const model = modelInput.value.trim();
+    if (model) formData.append("model", model);
 
     try {
       const res = await fetch("/api/games/upload-rules", { method: "POST", body: formData });
