@@ -51,30 +51,13 @@ class ModelGenerator:
             model_cls = self._create_object_model(obj_type, game_def)
             models[obj_type.id] = model_cls
 
-        # 3. 生成拍卖物品模型（如果游戏有拍卖相关的特殊机制）
-        auction_mechanics = [m for m in game_def.special_mechanics
-                            if "auction" in m.id.lower()]
-        if auction_mechanics:
-            # 查找拍卖区的对象类型
-            auction_zone = None
-            for z in game_def.zones:
-                if "auction" in z.id.lower():
-                    auction_zone = z
-                    break
-            if auction_zone:
-                obj_type_id = auction_zone.object_type
-                obj_model = models.get(obj_type_id)
-                if obj_model:
-                    auction_item_model = self._create_auction_item_model(obj_model)
-                    models["auction_item"] = auction_item_model
-
-        # 4. 生成玩家状态模型
+        # 3. 生成玩家状态模型
         models["player_state"] = self._create_player_state(game_def, models)
 
-        # 5. 生成全局状态模型
+        # 4. 生成全局状态模型
         models["global_state"] = self._create_global_state(game_def, models)
 
-        # 6. 生成完整游戏状态
+        # 5. 生成完整游戏状态
         models["game_state"] = self._create_game_state(models)
 
         return models
@@ -102,17 +85,6 @@ class ModelGenerator:
             part.capitalize() for part in obj_type.id.split("_")
         )
         return create_model(model_name, **fields)
-
-    def _create_auction_item_model(self, object_model: type[BaseModel]) -> type[BaseModel]:
-        """创建拍卖物品模型"""
-        fields: dict[str, Any] = {
-            "item": (object_model, ...),
-            "auction_type": (str, "open"),
-            "current_highest_bid": (int, 0),
-            "current_highest_bidder": (Optional[str], None),
-            "sealed_bids": (dict[str, int], Field(default_factory=dict)),
-        }
-        return create_model("AuctionItem", **fields)
 
     def _create_player_state(
         self, game_def: GameDefinition, models: dict[str, Any]

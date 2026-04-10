@@ -51,8 +51,8 @@ class UniversalGameManager:
         if not normalized_ref:
             return False
         disallowed_patterns = (
-            r"(?:func|event|anc|mod|fut|card|item|obj)[_\-\s]*\d+",
-            r"(?:artifact|auction(?:_item)?|token)[_\-\s#]*\d+",
+            r"(?:func|event|card|item|obj)[_\-\s]*\d+",
+            r"(?:token)[_\-\s#]*\d+",
             r"第\s*\d+\s*(?:件|号|個|个)?",
         )
         return any(re.fullmatch(pattern, normalized_ref) for pattern in disallowed_patterns)

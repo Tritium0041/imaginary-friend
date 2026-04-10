@@ -27,15 +27,15 @@ class FakeGMAgent:
         # Fake player objects with is_human attribute
         _p0 = SimpleNamespace(
             is_human=True,
-            function_cards=[
+            cards=[
                 SimpleNamespace(
                     model_dump=lambda: {"id": "c1", "name": "Fake Card", "description": "desc", "effect": "effect"}
                 )
             ],
             artifacts=[],
         )
-        _p1 = SimpleNamespace(is_human=False, function_cards=[], artifacts=[])
-        _p2 = SimpleNamespace(is_human=False, function_cards=[], artifacts=[])
+        _p1 = SimpleNamespace(is_human=False, cards=[], artifacts=[])
+        _p2 = SimpleNamespace(is_human=False, cards=[], artifacts=[])
         _players = {"player_0": _p0, "player_1": _p1, "player_2": _p2}
         self.universal_mgr = SimpleNamespace(
             get_game_state=lambda: {
@@ -112,6 +112,7 @@ def test_create_game_returns_progress_events(monkeypatch):
                 "api_key": "test-key",
                 "base_url": "",
                 "model": "fake-model",
+                "game_definition_name": "chronos_auction",
             },
         )
         assert response.status_code == 200
@@ -152,6 +153,7 @@ def test_action_returns_progress_events(monkeypatch):
                 "api_key": "test-key",
                 "base_url": "",
                 "model": "fake-model",
+                "game_definition_name": "chronos_auction",
             },
         )
         assert create_response.status_code == 200
@@ -192,6 +194,7 @@ def test_public_state_includes_player_artifacts(monkeypatch):
                 "api_key": "test-key",
                 "base_url": "",
                 "model": "fake-model",
+                "game_definition_name": "chronos_auction",
             },
         )
         assert create_response.status_code == 200
@@ -216,16 +219,17 @@ def test_state_includes_viewer_hand_cards(monkeypatch):
                 "api_key": "test-key",
                 "base_url": "",
                 "model": "fake-model",
+                "game_definition_name": "chronos_auction",
             },
         )
         assert create_response.status_code == 200
         payload = create_response.json()
         state = payload["state"]
         assert state["viewer_player_id"] == "player_0"
-        assert "viewer_function_cards" in state
-        assert isinstance(state["viewer_function_cards"], list)
-        assert len(state["viewer_function_cards"]) >= 1
-        first_card = state["viewer_function_cards"][0]
+        assert "viewer_hand_items" in state
+        assert isinstance(state["viewer_hand_items"], list)
+        assert len(state["viewer_hand_items"]) >= 1
+        first_card = state["viewer_hand_items"][0]
         assert set(first_card.keys()) == {"id", "name", "description", "effect"}
         assert first_card["id"]
         assert first_card["name"]

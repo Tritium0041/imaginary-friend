@@ -313,7 +313,7 @@ class TestServerCreateGameIntegration:
             ai_count=2,
             api_key="test-key",
         )
-        assert req.game_definition_name == "chronos_auction"
+        assert req.game_definition_name == ""
 
 
 class TestPromptGeneratorIntegration:

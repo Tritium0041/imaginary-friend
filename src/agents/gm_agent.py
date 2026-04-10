@@ -401,29 +401,7 @@ class GMAgent:
                 return message.content
         return ""
 
-    def _should_enforce_play_function_card_tool_use(
-        self,
-        content_blocks: list[Any],
-        enforcement_attempts: int,
-    ) -> bool:
-        if enforcement_attempts > 0:
-            return False
-        latest_user_text = self._latest_user_text_message().strip().lower()
-        if not latest_user_text:
-            return False
-        if any(neg in latest_user_text for neg in ("不使用功能卡", "不用功能卡", "不打出功能卡", "不发动功能卡")):
-            return False
-        requested_card_play = (
-            ("功能卡" in latest_user_text and any(v in latest_user_text for v in ("使用", "打出", "发动")))
-            or "play card" in latest_user_text
-            or "use card" in latest_user_text
-        )
-        if not requested_card_play:
-            return False
-        has_tool_use = any(getattr(block, "type", None) == "tool_use" for block in content_blocks)
-        return not has_tool_use
-
-    def _process_response(self, response, enforcement_attempts: int = 0) -> str:
+    def _process_response(self, response) -> str:
         """处理 API 响应"""
         result_text = ""
         game_id = self.session.game_id if self.session else None
@@ -497,44 +475,6 @@ class GMAgent:
             gm_logger.info("Claude follow-up received (stop_reason=%s)", response.stop_reason)
         
         final_content = self._serialize_assistant_content(response.content)
-        if self._should_enforce_play_function_card_tool_use(response.content, enforcement_attempts):
-            gm_logger.warning("Card play narration without tool_use detected; requesting correction")
-            self.session.messages.append(
-                Message(role="assistant", content=final_content if final_content else result_text)
-            )
-            self.session.messages.append(
-                Message(
-                    role="user",
-                    content=(
-                        "你刚才在叙述中处理了功能卡，但没有调用 play_function_card 工具。"
-                        "请基于当前状态重新回复：若玩家尝试使用功能卡，必须先调用 play_function_card 完成结算；"
-                        "禁止仅文字描述用卡结果。"
-                    ),
-                )
-            )
-            messages_for_api = [
-                {"role": m.role, "content": m.content}
-                for m in self.session.messages
-                if m.role != "system"
-            ]
-            system_content = next(
-                (m.content for m in self.session.messages if m.role == "system"),
-                ""
-            )
-            followup = self.client.messages.create(
-                model=self.config.model,
-                max_tokens=self.config.max_tokens,
-                temperature=self.config.temperature,
-                system=system_content,
-                tools=self.tools,
-                messages=messages_for_api,
-            )
-            self._record_response_usage(followup)
-            gm_logger.info(
-                "Claude correction follow-up received (stop_reason=%s)",
-                followup.stop_reason,
-            )
-            return self._process_response(followup, enforcement_attempts=enforcement_attempts + 1)
 
         # 最终文本响应
         for block in response.content:
@@ -693,7 +633,7 @@ GM 请求你行动: {context}
         elif "出售" in response or "sell" in response_lower:
             action = {"type": "sell", "proposal": response}
         
-        # 功能卡使用
+        # 卡牌使用
         elif "使用" in response and "卡" in response:
             action = {"type": "use_card", "proposal": response}
         

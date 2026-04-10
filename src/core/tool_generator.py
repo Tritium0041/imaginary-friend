@@ -324,56 +324,20 @@ class ToolGenerator:
         """特殊机制工具 — GM 通过描述了解如何使用"""
         tools = []
         for mech in game_def.special_mechanics:
-            # 根据机制类型生成相应工具
-            if "auction" in mech.id.lower() or "bid" in mech.id.lower():
-                # 拍卖相关
-                tools.append({
-                    "name": f"execute_{mech.id}",
-                    "description": f"执行特殊机制: {mech.name}。规则: {mech.description}",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "params": {
-                                "type": "object",
-                                "description": "机制参数（根据规则描述传入）",
-                            },
+            tools.append({
+                "name": f"execute_{mech.id}",
+                "description": f"执行特殊机制: {mech.name}。规则: {mech.description}",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "params": {
+                            "type": "object",
+                            "description": "机制参数（根据规则描述传入）",
                         },
-                        "required": [],
                     },
-                })
-            elif "trade" in mech.id.lower():
-                tools.append({
-                    "name": f"execute_{mech.id}",
-                    "description": f"执行特殊机制: {mech.name}。规则: {mech.description}",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "player_a": {"type": "string", "description": "交易方A"},
-                            "player_b": {"type": "string", "description": "交易方B"},
-                            "params": {
-                                "type": "object",
-                                "description": "交易细节",
-                            },
-                        },
-                        "required": ["player_a", "player_b"],
-                    },
-                })
-            else:
-                # 通用特殊机制
-                tools.append({
-                    "name": f"execute_{mech.id}",
-                    "description": f"执行特殊机制: {mech.name}。规则: {mech.description}",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "params": {
-                                "type": "object",
-                                "description": "机制参数（根据规则描述传入）",
-                            },
-                        },
-                        "required": [],
-                    },
-                })
+                    "required": [],
+                },
+            })
         return tools
 
 

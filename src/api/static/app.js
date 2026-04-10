@@ -32,12 +32,13 @@ const els = {
   actionBadge: document.getElementById("action-badge"),
   roundNumber: document.getElementById("round-number"),
   phase: document.getElementById("phase"),
-  stability: document.getElementById("stability"),
+  stability: null,
   contextLength: document.getElementById("context-length"),
+  globalResourcesList: document.getElementById("global-resources-list"),
   playersList: document.getElementById("players-list"),
   viewerHandCount: document.getElementById("viewer-hand-count"),
   viewerHandList: document.getElementById("viewer-hand-list"),
-  auctionItems: document.getElementById("auction-items"),
+  zoneItems: document.getElementById("zone-items"),
   startupProgressWrap: document.getElementById("startup-progress-wrap"),
   startupProgressLabel: document.getElementById("startup-progress-label"),
   startupProgressValue: document.getElementById("startup-progress-value"),
@@ -285,30 +286,6 @@ function flushMessages() {
   els.chatBox.scrollTop = els.chatBox.scrollHeight;
 }
 
-function translatePhase(phase) {
-  const map = {
-    setup: "准备",
-    excavation: "挖掘",
-    auction: "拍卖",
-    trading: "交易",
-    buyback: "回购",
-    event: "事件",
-    vote: "投票",
-    stabilize: "稳态",
-    game_over: "结束",
-  };
-  return map[phase] ?? phase ?? "-";
-}
-
-function translateEra(era) {
-  const map = {
-    ancient: "远古",
-    modern: "近代",
-    future: "未来",
-  };
-  return map[era] ?? era ?? "-";
-}
-
 function renderPlayers(players = {}, currentPlayerId = null) {
   const ids = Object.keys(players);
   if (!ids.length) {
@@ -316,6 +293,7 @@ function renderPlayers(players = {}, currentPlayerId = null) {
     return;
   }
 
+  const SKIP_KEYS = new Set(["id", "name", "is_human", "has_acted"]);
   const frag = document.createDocumentFragment();
   for (const playerId of ids) {
     const p = players[playerId];
@@ -323,27 +301,35 @@ function renderPlayers(players = {}, currentPlayerId = null) {
     card.className = `player-card ${playerId === currentPlayerId ? "current" : ""}`;
     const name = document.createElement("div");
     name.textContent = p.name ?? playerId;
+
+    // 动态渲染所有资源型字段（数字类型）
     const stats = document.createElement("div");
     stats.className = "meta";
-    stats.textContent = `💰 ${p.money ?? 0} · 🏆 ${p.victory_points ?? 0} VP`;
-    const cards = document.createElement("div");
-    cards.className = "meta";
-    cards.textContent = `文物 ${p.artifact_count ?? 0} · 功能卡 ${p.card_count ?? 0}`;
-    const artifacts = document.createElement("div");
-    artifacts.className = "artifact-list";
-    const items = Array.isArray(p.artifacts) ? p.artifacts : [];
-    if (items.length === 0) {
-      artifacts.innerHTML = '<span class="artifact-chip artifact-empty">暂无文物</span>';
-    } else {
-      for (const a of items) {
-        const chip = document.createElement("span");
-        chip.className = "artifact-chip";
-        const era = translateEra(a.era);
-        chip.textContent = `${a.name} · ${era} · ${a.base_value}`;
-        artifacts.appendChild(chip);
+    const statParts = [];
+    for (const [key, val] of Object.entries(p)) {
+      if (SKIP_KEYS.has(key)) continue;
+      if (typeof val === "number") {
+        statParts.push(`${key}: ${val}`);
       }
     }
-    card.append(name, stats, cards, artifacts);
+    stats.textContent = statParts.join(" · ") || "无资源";
+
+    // 动态渲染所有列表型字段（对象数组）
+    const itemsDiv = document.createElement("div");
+    itemsDiv.className = "meta";
+    const itemParts = [];
+    for (const [key, val] of Object.entries(p)) {
+      if (SKIP_KEYS.has(key)) continue;
+      if (Array.isArray(val)) {
+        itemParts.push(`${key}: ${val.length}`);
+      }
+    }
+    if (itemParts.length) {
+      itemsDiv.textContent = itemParts.join(" · ");
+    }
+
+    card.append(name, stats);
+    if (itemParts.length) card.appendChild(itemsDiv);
     frag.appendChild(card);
   }
   els.playersList.innerHTML = "";
@@ -372,11 +358,11 @@ function renderViewerHand(cards = []) {
 
     const cardName = document.createElement("h4");
     cardName.className = "hand-card-name";
-    cardName.textContent = cardInfo?.name || cardInfo?.id || "未知功能卡";
+    cardName.textContent = cardInfo?.name || cardInfo?.id || "未知物品";
 
     const tag = document.createElement("span");
     tag.className = "hand-card-tag";
-    tag.textContent = "功能卡";
+    tag.textContent = "手牌";
 
     cardTop.append(cardName, tag);
 
@@ -401,38 +387,70 @@ function renderViewerHand(cards = []) {
   els.viewerHandList.appendChild(frag);
 }
 
-function renderAuctionPool(items = []) {
-  if (!items.length) {
-    els.auctionItems.innerHTML = '<div class="empty-card">暂无拍卖物品</div>';
+function renderZones(zones = {}) {
+  const container = els.zoneItems;
+  if (!container) return;
+  const entries = Object.entries(zones);
+  if (!entries.length) {
+    container.innerHTML = '<div class="empty-card">暂无公共物品</div>';
     return;
   }
 
   const frag = document.createDocumentFragment();
-  for (const item of items) {
-    const box = document.createElement("div");
-    box.className = "auction-item";
-    const title = document.createElement("div");
-    title.className = "title";
-    title.textContent = item.artifact?.name ?? "未知文物";
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    const era = translateEra(item.artifact?.era);
-    const value = item.artifact?.base_value ?? 0;
-    const type = item.auction_type === "sealed" ? "🔒 密封" : "📢 公开";
-    const bid = item.current_highest_bid ? ` · 当前最高 ${item.current_highest_bid}` : "";
-    meta.textContent = `${era} · 价值 ${value} · ${type}${bid}`;
-    box.append(title, meta);
-    frag.appendChild(box);
+  for (const [zoneId, items] of entries) {
+    if (!Array.isArray(items) || !items.length) continue;
+    for (const item of items) {
+      const box = document.createElement("div");
+      box.className = "zone-item";
+      const title = document.createElement("div");
+      title.className = "title";
+      title.textContent = item?.name ?? item?.id ?? "未知物品";
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const metaParts = [];
+      metaParts.push(zoneId);
+      for (const [k, v] of Object.entries(item)) {
+        if (k === "id" || k === "name") continue;
+        if (typeof v === "string" || typeof v === "number") {
+          metaParts.push(`${k}: ${v}`);
+        }
+      }
+      meta.textContent = metaParts.join(" · ");
+      box.append(title, meta);
+      frag.appendChild(box);
+    }
   }
-  els.auctionItems.innerHTML = "";
-  els.auctionItems.appendChild(frag);
+  if (!frag.childNodes.length) {
+    container.innerHTML = '<div class="empty-card">暂无公共物品</div>';
+    return;
+  }
+  container.innerHTML = "";
+  container.appendChild(frag);
 }
 
 function renderState(payload) {
   if (!payload || payload.error) return;
   els.roundNumber.textContent = payload.current_round ?? 1;
-  els.phase.textContent = translatePhase(payload.current_phase);
-  els.stability.textContent = `${payload.stability ?? 100}%`;
+  els.phase.textContent = payload.current_phase ?? "-";
+
+  // 动态渲染全局资源
+  if (els.globalResourcesList) {
+    const SKIP_GLOBAL = new Set([
+      "game_id", "current_round", "max_rounds", "current_phase",
+      "current_player_id", "turn_order", "start_player_idx",
+      "active_effects", "action_log", "players",
+    ]);
+    const gs = payload.global_state || payload;
+    const resParts = [];
+    for (const [key, val] of Object.entries(gs)) {
+      if (SKIP_GLOBAL.has(key)) continue;
+      if (typeof val === "number") {
+        resParts.push(`<div><span>${key}</span><strong>${val}</strong></div>`);
+      }
+    }
+    els.globalResourcesList.innerHTML = resParts.join("");
+  }
+
   const metrics = payload.context_metrics || {};
   const apiTotalTokens = Number.isFinite(metrics.api_total_tokens) ? metrics.api_total_tokens : null;
   const apiInputTokens = Number.isFinite(metrics.api_input_tokens) ? metrics.api_input_tokens : null;
@@ -453,8 +471,17 @@ function renderState(payload) {
     els.contextLength.textContent = "-";
   }
   renderPlayers(payload.players, payload.current_player_id ?? payload.current_player);
-  renderViewerHand(payload.viewer_function_cards ?? []);
-  renderAuctionPool(payload.auction_pool ?? []);
+  renderViewerHand(payload.viewer_hand_items ?? []);
+
+  // 从 global_state 中提取所有数组字段作为公共区域
+  const zones = {};
+  const gs2 = payload.global_state || payload;
+  for (const [key, val] of Object.entries(gs2)) {
+    if (Array.isArray(val) && val.length && typeof val[0] === "object") {
+      zones[key] = val;
+    }
+  }
+  renderZones(zones);
 }
 
 async function startGame() {
@@ -491,8 +518,13 @@ async function startGame() {
     model: els.model.value.trim() || "claude-sonnet-4-20250514",
   };
 
-  const gameDef = els.gameDef ? els.gameDef.value : "chronos_auction";
-  body.game_definition_name = gameDef || "chronos_auction";
+  const gameDef = els.gameDef ? els.gameDef.value : "";
+  if (!gameDef) {
+    setSetupError("请选择一个游戏定义");
+    els.startBtn.disabled = false;
+    return;
+  }
+  body.game_definition_name = gameDef;
 
   try {
     const res = await fetch("/api/games", {
@@ -699,8 +731,9 @@ async function loadGameDefinitions(selectValue) {
     }
     if (!select.options.length) {
       const opt = document.createElement("option");
-      opt.value = "chronos_auction";
-      opt.textContent = "时空拍卖行";
+      opt.value = "";
+      opt.textContent = "（无可用游戏）";
+      opt.disabled = true;
       select.appendChild(opt);
     }
     if (selectValue) {
@@ -712,8 +745,9 @@ async function loadGameDefinitions(selectValue) {
     if (select) {
       select.innerHTML = "";
       const opt = document.createElement("option");
-      opt.value = "chronos_auction";
-      opt.textContent = "时空拍卖行";
+      opt.value = "";
+      opt.textContent = "（加载失败）";
+      opt.disabled = true;
       select.appendChild(opt);
     }
   }

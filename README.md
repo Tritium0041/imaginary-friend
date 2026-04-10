@@ -6,7 +6,7 @@
 
 - 🎲 **通用桌游引擎** — 通过 GameDefinition 描述任意桌游，自动生成工具集和 GM Prompt
 - 📄 **PDF 规则书解析** — 上传桌游规则书 PDF，AI 自动提取结构化游戏定义
-- 🏛️ **内置时空拍卖行** — 完整的《时空拍卖行》游戏作为参考实现
+- 🏛️ **内置示例游戏** — 《时空拍卖行》作为 GameDefinition 范例，演示引擎能力
 - 🎮 单人对战 2-4 个 AI 对手
 - 🤖 GM Agent 由 Claude 大语言模型驱动
 - 💬 自然语言交互
@@ -31,7 +31,7 @@ export ANTHROPIC_API_KEY=your-api-key
 **命令行模式:**
 ```bash
 python main.py
-# 启动后选择游戏：原版时空拍卖行 / 通用引擎游戏 / 从 PDF 导入
+# 启动后选择已导入的游戏 / 从 PDF 导入新游戏
 ```
 
 **Web 模式:**
@@ -57,9 +57,9 @@ board_game_agent/
 │   │   ├── llm_extractor.py     # LLM 结构化提取
 │   │   └── cache_manager.py     # 三级缓存管理
 │   ├── games/             # 游戏实例
-│   │   └── chronos_auction/     # 时空拍卖行
+│   │   └── chronos_auction/     # 内置示例游戏
 │   │       ├── definition.json  # GameDefinition 数据
-│   │       └── adapter.py       # 游戏特定逻辑
+│   │       └── adapter.py       # 可选适配器（引擎不依赖）
 │   ├── models/            # 原版数据模型（向后兼容）
 │   ├── tools/             # 原版工具（向后兼容）
 │   ├── agents/            # Agent 实现

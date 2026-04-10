@@ -488,13 +488,13 @@ select:focus {
   gap: 10px;
 }
 
-.auction-grid {
+.zone-grid {
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
 }
 
-.auction-item,
+.zone-item,
 .empty-card {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -502,12 +502,12 @@ select:focus {
   background: var(--panel-soft);
 }
 
-.auction-item .title {
+.zone-item .title {
   color: #ffe29f;
   font-weight: 700;
 }
 
-.auction-item .meta {
+.zone-item .meta {
   color: var(--text-soft);
   font-size: 12px;
   margin-top: 6px;

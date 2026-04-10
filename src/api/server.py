@@ -31,8 +31,8 @@ class GameCreateRequest(BaseModel):
     base_url: str = ""
     model: str = "claude-sonnet-4-20250514"
     game_definition_name: str = Field(
-        default="chronos_auction",
-        description="游戏定义 ID",
+        default="",
+        description="游戏定义 ID（必填）",
     )
 
 
@@ -225,7 +225,7 @@ def _build_state_snapshot(runtime: GameRuntime) -> dict[str, Any]:
     state_payload["context_metrics"] = _build_context_metrics(runtime)
 
     viewer_player_id: Optional[str] = None
-    viewer_function_cards: list[dict[str, str]] = []
+    viewer_hand_items: list[dict[str, str]] = []
 
     # 统一通过 game_state.players 获取玩家信息
     game_state = getattr(mgr, "game_state", None)
@@ -237,7 +237,7 @@ def _build_state_snapshot(runtime: GameRuntime) -> dict[str, Any]:
             viewer_player_id = str(player_id)
             # 通用引擎中卡牌字段可能名称不同，安全遍历
             cards = []
-            for attr in ("function_cards", "cards", "hand"):
+            for attr in ("cards", "hand"):
                 cards = list(getattr(player, attr, []) or [])
                 if cards:
                     break
@@ -248,7 +248,7 @@ def _build_state_snapshot(runtime: GameRuntime) -> dict[str, Any]:
                     card_data = card
                 else:
                     continue
-                viewer_function_cards.append(
+                viewer_hand_items.append(
                     {
                         "id": str(card_data.get("id", "")),
                         "name": str(card_data.get("name", "")),
@@ -259,7 +259,7 @@ def _build_state_snapshot(runtime: GameRuntime) -> dict[str, Any]:
             break
 
     state_payload["viewer_player_id"] = viewer_player_id
-    state_payload["viewer_function_cards"] = viewer_function_cards
+    state_payload["viewer_hand_items"] = viewer_hand_items
     return state_payload
 
 
@@ -569,7 +569,7 @@ def _build_html_page() -> str:
           <div class="kv-list">
             <div><span>回合</span><strong id="round-number">1</strong></div>
             <div><span>阶段</span><strong id="phase">准备</strong></div>
-            <div><span>稳定性</span><strong id="stability">100%</strong></div>
+            <div id="global-resources-list"></div>
             <div><span>上下文长度</span><strong id="context-length">-</strong></div>
           </div>
         </article>
@@ -596,25 +596,25 @@ def _build_html_page() -> str:
           </div>
         </div>
         <form id="action-form" class="action-row">
-          <input id="action-input" type="text" placeholder="输入你的行动，例如：我出价 24" />
+          <input id="action-input" type="text" placeholder="输入你的行动" />
           <button id="send-btn" class="btn-primary" type="submit">发送</button>
         </form>
       </article>
 
       <article class="panel">
         <div class="panel-title-row">
-          <h2>我的手牌</h2>
+          <h2>我的物品</h2>
           <span id="viewer-hand-count" class="badge">0 张</span>
         </div>
         <div id="viewer-hand-list" class="hand-list">
-          <div class="hand-empty">暂无手牌</div>
+          <div class="hand-empty">暂无物品</div>
         </div>
       </article>
 
       <article class="panel">
-        <h2>拍卖区</h2>
-        <div id="auction-items" class="auction-grid">
-          <div class="empty-card">暂无拍卖物品</div>
+        <h2>公共区域</h2>
+        <div id="zone-items" class="zone-grid">
+          <div class="empty-card">暂无公共物品</div>
         </div>
       </article>
     </section>
@@ -747,7 +747,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="通用桌游 Agent API",
-    description="通用桌游 Agent 系统后端接口 — 支持时空拍卖行及自定义桌游",
+    description="通用桌游 Agent 系统后端接口",
     version="0.3.0",
     lifespan=lifespan,
 )
