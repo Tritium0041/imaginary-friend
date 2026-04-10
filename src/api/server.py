@@ -475,6 +475,7 @@ def _build_html_page() -> str:
         <p>Universal Board Game Agent · 实时 GM 面板</p>
       </div>
       <div class="status-row">
+        <a href="/manage" class="badge badge-link">📋 游戏管理</a>
         <span id="conn-badge" class="badge badge-offline">未连接</span>
         <span id="stream-badge" class="badge">流式空闲</span>
       </div>
@@ -627,6 +628,88 @@ def _build_html_page() -> str:
 
 STATIC_DIR = Path(__file__).parent / "static"
 HTML_PAGE = _build_html_page()
+
+
+def _build_manage_page() -> str:
+    return """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>游戏管理 · 通用桌游 Agent</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/manage.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>游戏管理</h1>
+        <p>管理已导入的桌游定义 · 上传新游戏</p>
+      </div>
+      <div class="status-row">
+        <a href="/play" class="badge badge-link">🎮 开始游戏</a>
+      </div>
+    </header>
+
+    <section class="panel upload-panel">
+      <h2>📄 导入新桌游</h2>
+      <div class="upload-form-row">
+        <label class="upload-api-key-label">
+          <span>API Key（用于解析 PDF）</span>
+          <input id="manage-api-key" type="password" placeholder="sk-ant-..." />
+        </label>
+      </div>
+      <div id="manage-drop-zone" class="drop-zone">
+        <input id="manage-pdf-file" type="file" accept=".pdf" hidden />
+        <div class="drop-zone-inner">
+          <span class="drop-icon">📁</span>
+          <p>将 PDF 拖拽到此处，或 <a id="manage-browse-link" href="#">点击选择文件</a></p>
+        </div>
+      </div>
+      <div id="manage-upload-file-info" class="upload-file-info hidden">
+        <span id="manage-upload-filename"></span>
+        <button id="manage-upload-btn" class="btn-primary btn-sm" type="button">上传并解析</button>
+        <button id="manage-upload-cancel-btn" class="btn-cancel btn-sm" type="button">取消</button>
+      </div>
+      <div id="manage-upload-progress-wrap" class="progress-wrap hidden">
+        <div class="progress-meta">
+          <span>正在解析规则书...</span>
+          <span>处理中</span>
+        </div>
+        <div class="progress-track">
+          <div id="manage-upload-progress-bar" class="progress-bar indeterminate"></div>
+        </div>
+      </div>
+      <p id="manage-upload-result" class="hidden"></p>
+    </section>
+
+    <section class="panel">
+      <h2>🎲 已有游戏</h2>
+      <div id="games-grid" class="games-grid">
+        <div class="loading-text">加载中...</div>
+      </div>
+    </section>
+
+    <div id="detail-modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content panel">
+        <div class="modal-header">
+          <h2 id="detail-title">游戏详情</h2>
+          <button id="detail-close" class="btn-cancel btn-sm">✕</button>
+        </div>
+        <div id="detail-body" class="modal-body"></div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module" src="/static/manage.js"></script>
+</body>
+</html>
+"""
+
+
+MANAGE_PAGE = _build_manage_page()
 
 
 @asynccontextmanager
@@ -829,6 +912,24 @@ async def update_game_definition(game_id: str, body: dict[str, Any]):
     return {"status": "ok", "game_id": game_id, "name": updated.name}
 
 
+@app.delete("/api/games/definitions/{game_id}")
+async def delete_game_definition(game_id: str):
+    """删除缓存的游戏定义（内置游戏不可删除）"""
+    from ..core.game_loader import discover_games, CACHE_DIR
+
+    games = discover_games()
+    target = next((g for g in games if g["id"] == game_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"游戏定义不存在: {game_id}")
+    if target["source"] == "builtin":
+        raise HTTPException(status_code=403, detail="内置游戏不可删除")
+
+    path = Path(target["path"])
+    if path.exists():
+        path.unlink()
+    return {"status": "ok", "game_id": game_id}
+
+
 @app.post("/api/games/upload-rules")
 async def upload_rules(file: UploadFile, api_key: str = Form(default="")):
     """上传 PDF 规则书，解析后返回 GameDefinition"""
@@ -957,3 +1058,8 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str):
 @app.get("/play", response_class=HTMLResponse)
 async def play_page():
     return HTML_PAGE
+
+
+@app.get("/manage", response_class=HTMLResponse)
+async def manage_page():
+    return MANAGE_PAGE

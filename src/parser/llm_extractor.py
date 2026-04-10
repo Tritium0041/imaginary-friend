@@ -28,6 +28,7 @@ EXTRACTION_PROMPTS = {
 - name: 游戏的中文名称
 - name_en: 游戏的英文名称（如果有）
 - description: 一句话游戏简介
+- gameplay_overview: 游戏流程概述（300-1000字），用自然语言描述这个游戏怎么玩，包括核心机制、回合流程、玩家互动方式等
 - version: 版本号（默认 "1.0"）
 - player_count_min: 最少玩家数
 - player_count_max: 最多玩家数

@@ -182,6 +182,9 @@ class GameDefinition(BaseModel):
     # 特殊机制
     special_mechanics: list[SpecialMechanicDef] = Field(default_factory=list)
 
+    # 游戏流程概述（≤1000字，帮助 LLM 理解游戏玩法）
+    gameplay_overview: str = ""
+
     # 完整规则文本（用于 GM Prompt 注入）
     rules_text: str = ""
 

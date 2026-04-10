@@ -50,6 +50,8 @@ class PromptGenerator:
         lines.append("你负责主持整局游戏，确保规则正确执行，并为玩家提供沉浸式体验。")
         if game_def.description:
             lines.append(f"\n**游戏简介**: {game_def.description}")
+        if game_def.gameplay_overview:
+            lines.append(f"\n**游戏流程概述**:\n{game_def.gameplay_overview}")
         lines.append(f"\n- 玩家人数: {game_def.player_count_min}~{game_def.player_count_max}")
         return "\n".join(lines)
 

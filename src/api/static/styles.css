@@ -532,6 +532,18 @@ select:focus {
   color: var(--ok);
 }
 
+.badge-link {
+  text-decoration: none;
+  background: rgba(242, 180, 74, 0.15);
+  color: var(--accent) !important;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.badge-link:hover {
+  background: rgba(242, 180, 74, 0.3);
+}
+
 @media (max-width: 920px) {
   .two-col,
   .game-grid {
