@@ -201,7 +201,12 @@ class LlmExtractor:
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
             )
-            content = response.content[0].text
+            # 跳过 ThinkingBlock，提取第一个 TextBlock 的文本
+            content = ""
+            for block in response.content:
+                if getattr(block, "type", None) == "text":
+                    content = block.text
+                    break
 
             # 尝试从 markdown 代码块中提取 JSON
             if "```json" in content:
