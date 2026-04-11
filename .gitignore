@@ -10,3 +10,5 @@ __pycache__/
 .playwright-mcp
 /*.md
 !README.md
+cache/*
+src/games/*/
