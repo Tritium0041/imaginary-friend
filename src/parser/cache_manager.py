@@ -1,20 +1,16 @@
 """
 缓存管理器 (CacheManager)
 
-三级缓存：
-- Level 1: PDF 文本缓存 (sha256 → StructuredDocument JSON)
-- Level 2: GameDefinition 缓存 (sha256 + model → definition.json)
-- Level 3: 生成产物缓存 (tools.json + gm_prompt.md)
+两级缓存：
+- Level 1: 原始文本缓存 (sha256 → raw text JSON)，支持 PDF/DOCX/MD
+- Level 2: 清洗后的规则缓存 (sha256 → rules.md + metadata.json)
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from pathlib import Path
 from typing import Any, Optional
-
-from ..core.game_definition import GameDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -22,99 +18,77 @@ DEFAULT_CACHE_DIR = Path(__file__).parent.parent.parent / "cache"
 
 
 class CacheManager:
-    """多级缓存管理器"""
+    """两级缓存管理器"""
 
     def __init__(self, cache_dir: str | Path | None = None):
         self.cache_dir = Path(cache_dir) if cache_dir else DEFAULT_CACHE_DIR
-        self.l1_dir = self.cache_dir / "pdf_text"
-        self.l2_dir = self.cache_dir / "game_defs"
-        self.l3_dir = self.cache_dir / "generated"
+        self.l1_dir = self.cache_dir / "raw_text"
+        self.l2_dir = self.cache_dir / "cleaned_rules"
         self._ensure_dirs()
 
     def _ensure_dirs(self):
-        for d in (self.l1_dir, self.l2_dir, self.l3_dir):
+        for d in (self.l1_dir, self.l2_dir):
             d.mkdir(parents=True, exist_ok=True)
 
-    # ========== Level 1: PDF 文本缓存 ==========
+    # ========== Level 1: 原始文本缓存 ==========
 
-    def get_pdf_text(self, sha256: str) -> Optional[dict]:
-        """获取缓存的 PDF 文本"""
-        path = self.l1_dir / f"{sha256}.json"
+    def get_raw_text(self, sha256: str) -> Optional[str]:
+        """获取缓存的原始文本"""
+        path = self.l1_dir / f"{sha256}.txt"
         if path.exists():
             logger.debug("L1 cache hit: %s", sha256[:12])
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            return path.read_text(encoding="utf-8")
         return None
 
-    def set_pdf_text(self, sha256: str, data: dict):
-        """缓存 PDF 文本"""
-        path = self.l1_dir / f"{sha256}.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+    def set_raw_text(self, sha256: str, text: str):
+        """缓存原始文本"""
+        path = self.l1_dir / f"{sha256}.txt"
+        path.write_text(text, encoding="utf-8")
         logger.debug("L1 cache set: %s", sha256[:12])
 
-    # ========== Level 2: GameDefinition 缓存 ==========
+    # ========== Level 2: 规则缓存 ==========
 
-    def get_game_def(self, sha256: str, model_version: str = "default") -> Optional[GameDefinition]:
-        """获取缓存的 GameDefinition"""
-        key = f"{sha256}_{model_version}"
-        path = self.l2_dir / f"{key}.json"
-        if path.exists():
-            logger.debug("L2 cache hit: %s", key[:20])
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return GameDefinition(**data)
+    def get_rules(self, sha256: str) -> Optional[tuple[str, dict[str, Any]]]:
+        """获取缓存的 rules.md + metadata。返回 (rules_md, metadata) 或 None。"""
+        game_dir = self.l2_dir / sha256
+        rules_file = game_dir / "rules.md"
+        meta_file = game_dir / "metadata.json"
+        if rules_file.exists() and meta_file.exists():
+            logger.debug("L2 cache hit: %s", sha256[:12])
+            rules_md = rules_file.read_text(encoding="utf-8")
+            metadata = json.loads(meta_file.read_text(encoding="utf-8"))
+            return rules_md, metadata
         return None
 
-    def set_game_def(self, sha256: str, game_def: GameDefinition, model_version: str = "default"):
-        """缓存 GameDefinition"""
-        key = f"{sha256}_{model_version}"
-        path = self.l2_dir / f"{key}.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(game_def.model_dump(), f, ensure_ascii=False, indent=2)
-        logger.debug("L2 cache set: %s", key[:20])
-
-    # ========== Level 3: 生成产物缓存 ==========
-
-    def get_generated(self, game_id: str, artifact_type: str) -> Optional[Any]:
-        """获取缓存的生成产物"""
-        path = self.l3_dir / game_id / f"{artifact_type}"
-        if path.exists():
-            logger.debug("L3 cache hit: %s/%s", game_id, artifact_type)
-            with open(path, "r", encoding="utf-8") as f:
-                if artifact_type.endswith(".json"):
-                    return json.load(f)
-                return f.read()
-        return None
-
-    def set_generated(self, game_id: str, artifact_type: str, data: Any):
-        """缓存生成产物"""
-        game_dir = self.l3_dir / game_id
+    def set_rules(self, sha256: str, rules_md: str, metadata: dict[str, Any]):
+        """缓存 rules.md + metadata"""
+        game_dir = self.l2_dir / sha256
         game_dir.mkdir(parents=True, exist_ok=True)
-        path = game_dir / f"{artifact_type}"
-        with open(path, "w", encoding="utf-8") as f:
-            if isinstance(data, (dict, list)):
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            else:
-                f.write(str(data))
-        logger.debug("L3 cache set: %s/%s", game_id, artifact_type)
+        (game_dir / "rules.md").write_text(rules_md, encoding="utf-8")
+        (game_dir / "metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.debug("L2 cache set: %s", sha256[:12])
 
     # ========== 工具方法 ==========
 
     def list_cached_games(self) -> list[dict]:
-        """列出所有缓存的 GameDefinition"""
+        """列出所有缓存的游戏"""
         games = []
-        for path in self.l2_dir.glob("*.json"):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                games.append({
-                    "file": path.name,
-                    "id": data.get("id", "unknown"),
-                    "name": data.get("name", "unknown"),
-                })
-            except Exception:
-                continue
+        if not self.l2_dir.exists():
+            return games
+        for subdir in self.l2_dir.iterdir():
+            meta_file = subdir / "metadata.json"
+            if subdir.is_dir() and meta_file.exists():
+                try:
+                    meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                    games.append({
+                        "id": subdir.name,
+                        "name": meta.get("game_name", "unknown"),
+                    })
+                except Exception:
+                    continue
         return games
 
     def clear_cache(self, level: Optional[int] = None):
@@ -128,8 +102,4 @@ class CacheManager:
             if self.l2_dir.exists():
                 shutil.rmtree(self.l2_dir)
                 self.l2_dir.mkdir(parents=True, exist_ok=True)
-        if level is None or level == 3:
-            if self.l3_dir.exists():
-                shutil.rmtree(self.l3_dir)
-                self.l3_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Cache cleared (level=%s)", level or "all")
