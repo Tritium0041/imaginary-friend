@@ -1,5 +1,5 @@
 """
-FastAPI 后端 - WebSocket 实时游戏接口（支持 GM 流式输出 + 通用桌游引擎）
+FastAPI 后端 - WebSocket 实时游戏接口（DocStore + rules.md 架构）
 """
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ class GameCreateRequest(BaseModel):
     api_key: str = ""
     base_url: str = ""
     model: str = "claude-sonnet-4-20250514"
-    game_definition_name: str = Field(
+    game_id: str = Field(
         default="",
-        description="游戏定义 ID（必填）",
+        description="游戏 ID（必填）",
     )
 
 
@@ -49,7 +49,6 @@ class GameRuntime:
 
     game_id: str
     gm: GMAgent
-    game_mgr: Any  # UniversalGameManager
     config: dict[str, str]
     loop: asyncio.AbstractEventLoop
     action_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -215,48 +214,37 @@ def _build_context_metrics(runtime: GameRuntime) -> dict[str, int]:
 
 
 def _build_state_snapshot(runtime: GameRuntime) -> dict[str, Any]:
-    mgr = runtime.game_mgr
-    state = mgr.get_game_state() if mgr else {}
-    if not isinstance(state, dict):
-        return {"state": state}
-    if state.get("error"):
-        return state
-    state_payload = dict(state)
+    """从 DocStore 构建状态快照"""
+    session = runtime.gm.session
+    if session is None:
+        return {}
+
+    doc_store = runtime.gm.doc_store
+    snapshot = doc_store.snapshot() if doc_store else {}
+    state_payload: dict[str, Any] = dict(snapshot)
     state_payload["context_metrics"] = _build_context_metrics(runtime)
 
+    # 查找人类玩家作为 viewer
     viewer_player_id: Optional[str] = None
     viewer_hand_items: list[dict[str, str]] = []
 
-    # 统一通过 game_state.players 获取玩家信息
-    game_state = getattr(mgr, "game_state", None)
-    players = getattr(game_state, "players", {}) if game_state is not None else {}
-    if isinstance(players, dict):
-        for player_id, player in players.items():
-            if not getattr(player, "is_human", False):
-                continue
-            viewer_player_id = str(player_id)
-            # 通用引擎中卡牌字段可能名称不同，安全遍历
-            cards = []
-            for attr in ("cards", "hand"):
-                cards = list(getattr(player, attr, []) or [])
-                if cards:
-                    break
-            for card in cards:
-                if hasattr(card, "model_dump"):
-                    card_data = card.model_dump()
-                elif isinstance(card, dict):
-                    card_data = card
-                else:
-                    continue
-                viewer_hand_items.append(
-                    {
-                        "id": str(card_data.get("id", "")),
-                        "name": str(card_data.get("name", "")),
-                        "description": str(card_data.get("description", "")),
-                        "effect": str(card_data.get("effect", "")),
-                    }
-                )
-            break
+    players = snapshot.get("players", [])
+    player_info = getattr(session, "player_info", {}) or {}
+    for player in players:
+        pid = player.get("_id", "")
+        info = player_info.get(pid, {})
+        if not info.get("is_human", False):
+            continue
+        viewer_player_id = str(pid)
+        for card in player.get("hand", []):
+            if isinstance(card, dict):
+                viewer_hand_items.append({
+                    "id": str(card.get("id", card.get("_id", ""))),
+                    "name": str(card.get("name", "")),
+                    "description": str(card.get("description", "")),
+                    "effect": str(card.get("effect", "")),
+                })
+        break
 
     state_payload["viewer_player_id"] = viewer_player_id
     state_payload["viewer_hand_items"] = viewer_hand_items
@@ -465,7 +453,7 @@ def _build_html_page() -> str:
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>通用桌游 Agent · 实时对局</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=2" />
 </head>
 <body>
   <main class="app-shell">
@@ -525,12 +513,12 @@ def _build_html_page() -> str:
         </label>
       </div>
       <div class="upload-section">
-        <p class="upload-label">📄 导入新桌游（上传 PDF 规则书）</p>
+        <p class="upload-label">📄 导入新桌游（上传 PDF / DOCX / MD 规则书）</p>
         <div id="drop-zone" class="drop-zone">
-          <input id="pdf-file" type="file" accept=".pdf" hidden />
+          <input id="pdf-file" type="file" accept=".pdf,.docx,.md" hidden />
           <div class="drop-zone-inner">
             <span class="drop-icon">📁</span>
-            <p>将 PDF 拖拽到此处，或 <a id="browse-link" href="#">点击选择文件</a></p>
+            <p>将规则书拖拽到此处，或 <a id="browse-link" href="#">点击选择文件</a></p>
           </div>
         </div>
         <div id="upload-file-info" class="upload-file-info hidden">
@@ -620,7 +608,7 @@ def _build_html_page() -> str:
     </section>
   </main>
 
-  <script type="module" src="/static/app.js"></script>
+  <script type="module" src="/static/app.js?v=2"></script>
 </body>
 </html>
 """
@@ -637,8 +625,8 @@ def _build_manage_page() -> str:
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>游戏管理 · 通用桌游 Agent</title>
-  <link rel="stylesheet" href="/static/styles.css" />
-  <link rel="stylesheet" href="/static/manage.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=2" />
+  <link rel="stylesheet" href="/static/manage.css?v=2" />
 </head>
 <body>
   <main class="app-shell">
@@ -656,7 +644,7 @@ def _build_manage_page() -> str:
       <h2>📄 导入新桌游</h2>
       <div class="upload-form-row">
         <label class="upload-api-key-label">
-          <span>API Key（用于解析 PDF）</span>
+          <span>API Key（用于解析规则书）</span>
           <input id="manage-api-key" type="password" placeholder="sk-ant-..." />
         </label>
       </div>
@@ -671,10 +659,10 @@ def _build_manage_page() -> str:
         </label>
       </div>
       <div id="manage-drop-zone" class="drop-zone">
-        <input id="manage-pdf-file" type="file" accept=".pdf" hidden />
+        <input id="manage-pdf-file" type="file" accept=".pdf,.docx,.md" hidden />
         <div class="drop-zone-inner">
           <span class="drop-icon">📁</span>
-          <p>将 PDF 拖拽到此处，或 <a id="manage-browse-link" href="#">点击选择文件</a></p>
+          <p>将规则书拖拽到此处，或 <a id="manage-browse-link" href="#">点击选择文件</a></p>
         </div>
       </div>
       <div id="manage-upload-file-info" class="upload-file-info hidden">
@@ -713,7 +701,7 @@ def _build_manage_page() -> str:
     </div>
   </main>
 
-  <script type="module" src="/static/manage.js"></script>
+  <script type="module" src="/static/manage.js?v=2"></script>
 </body>
 </html>
 """
@@ -813,22 +801,23 @@ async def create_game(request: GameCreateRequest):
 
     record_progress("runtime_preparing", "正在构建游戏运行时", percent=30)
 
-    from ..core.game_loader import load_game_definition
-    game_definition = load_game_definition(request.game_definition_name)
-    if game_definition is None:
+    from ..core.game_loader import load_game_rules
+    result = load_game_rules(request.game_id)
+    if result is None:
         raise HTTPException(
             status_code=400,
-            detail=f"未找到游戏定义: {request.game_definition_name}",
+            detail=f"未找到游戏: {request.game_id}",
         )
+    rules_md, metadata = result
 
     gm = GMAgent(
+        rules_md=rules_md,
+        metadata=metadata,
         config=GMConfig(model=request.model),
         on_output=collect_output,
         api_key=api_key,
         base_url=request.base_url.strip() or None,
-        game_definition=game_definition,
     )
-    game_mgr = gm.universal_mgr
 
     record_progress("game_initializing", "正在初始化牌局与 GM 会话", percent=55, indeterminate=True)
     try:
@@ -850,7 +839,6 @@ async def create_game(request: GameCreateRequest):
     runtime = GameRuntime(
         game_id=game_id,
         gm=gm,
-        game_mgr=game_mgr,
         config={
             "api_key": api_key,
             "base_url": request.base_url.strip(),
@@ -883,7 +871,7 @@ async def create_game(request: GameCreateRequest):
 
 @app.get("/api/games/definitions")
 async def list_game_definitions():
-    """列出所有可用的 GameDefinition"""
+    """列出所有可用的游戏"""
     from ..core.game_loader import discover_games
     games = discover_games()
     return {"definitions": games}
@@ -891,52 +879,52 @@ async def list_game_definitions():
 
 @app.get("/api/games/definitions/{game_id}")
 async def get_game_definition(game_id: str):
-    """获取指定游戏的 GameDefinition"""
-    from ..core.game_loader import load_game_definition
-    game_def = load_game_definition(game_id)
-    if game_def is None:
-        raise HTTPException(status_code=404, detail=f"游戏定义不存在: {game_id}")
-    return game_def.model_dump()
+    """获取指定游戏的规则和元数据"""
+    from ..core.game_loader import load_game_rules
+    result = load_game_rules(game_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"游戏不存在: {game_id}")
+    rules_md, metadata = result
+    return {"game_id": game_id, "metadata": metadata, "rules_md": rules_md}
 
 
 @app.put("/api/games/definitions/{game_id}")
 async def update_game_definition(game_id: str, body: dict[str, Any]):
-    """更新（微调）指定游戏的 GameDefinition"""
-    from ..core.game_loader import load_game_definition, save_game_definition
-    from ..core.game_definition import GameDefinition
+    """更新（微调）指定游戏的元数据"""
+    from ..core.game_loader import load_game_rules, save_game_rules
 
-    existing = load_game_definition(game_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail=f"游戏定义不存在: {game_id}")
+    result = load_game_rules(game_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"游戏不存在: {game_id}")
+    rules_md, metadata = result
 
-    merged = existing.model_dump()
-    merged.update(body)
-    merged["id"] = game_id
+    # Merge updates into metadata
+    for key, val in body.items():
+        if key == "rules_md":
+            rules_md = val
+        else:
+            metadata[key] = val
 
-    try:
-        updated = GameDefinition(**merged)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"GameDefinition 校验失败: {exc}") from exc
-
-    save_game_definition(updated)
-    return {"status": "ok", "game_id": game_id, "name": updated.name}
+    save_game_rules(game_id, rules_md, metadata)
+    return {"status": "ok", "game_id": game_id, "name": metadata.get("game_name", game_id)}
 
 
 @app.delete("/api/games/definitions/{game_id}")
 async def delete_game_definition(game_id: str):
-    """删除缓存的游戏定义（内置游戏不可删除）"""
-    from ..core.game_loader import discover_games, CACHE_DIR
+    """删除缓存的游戏（内置游戏不可删除）"""
+    from ..core.game_loader import discover_games
+    import shutil
 
     games = discover_games()
     target = next((g for g in games if g["id"] == game_id), None)
     if target is None:
-        raise HTTPException(status_code=404, detail=f"游戏定义不存在: {game_id}")
+        raise HTTPException(status_code=404, detail=f"游戏不存在: {game_id}")
     if target["source"] == "builtin":
         raise HTTPException(status_code=403, detail="内置游戏不可删除")
 
     path = Path(target["path"])
-    if path.exists():
-        path.unlink()
+    if path.is_dir() and path.exists():
+        shutil.rmtree(path)
     return {"status": "ok", "game_id": game_id}
 
 
@@ -947,9 +935,10 @@ async def upload_rules(
     base_url: str = Form(default=""),
     model: str = Form(default=""),
 ):
-    """上传 PDF 规则书，解析后返回 GameDefinition"""
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="请上传 PDF 文件")
+    """上传规则书（PDF/DOCX/MD），解析后返回游戏信息"""
+    supported = (".pdf", ".docx", ".md")
+    if not file.filename or not any(file.filename.lower().endswith(ext) for ext in supported):
+        raise HTTPException(status_code=400, detail="请上传 PDF、DOCX 或 MD 文件")
 
     content = await file.read()
     if len(content) == 0:
@@ -963,37 +952,44 @@ async def upload_rules(
     resolved_model = (model or "").strip() or "claude-sonnet-4-20250514"
 
     try:
-        from ..parser.pdf_extractor import PdfExtractor
-        from ..parser.llm_extractor import LlmExtractor
+        from ..parser.document_parser import parse_bytes
+        from ..parser.rule_cleaner import RuleCleaner
         from ..parser.cache_manager import CacheManager
-        from ..core.game_loader import save_game_definition
+        from ..core.game_loader import save_game_rules
         import anthropic
 
-        extractor = PdfExtractor()
-        doc = extractor.extract_from_bytes(content, file.filename)
+        raw_doc = parse_bytes(content, file.filename)
 
         cache = CacheManager()
-        cached = cache.get_game_def(doc.sha256)
+        cached = cache.get_rules(raw_doc.sha256)
         if cached:
+            rules_md, metadata = cached
+            game_name = metadata.get("game_name", "Unknown")
+            game_id = raw_doc.sha256[:8]
+            save_game_rules(game_id, rules_md, metadata)
             return {
                 "status": "cached",
-                "game_definition": cached.model_dump(),
-                "message": f"使用缓存: {cached.name}",
+                "game_id": game_id,
+                "metadata": metadata,
+                "message": f"使用缓存: {game_name}",
             }
 
         client_kwargs: dict[str, Any] = {"api_key": resolved_key}
         if resolved_base_url:
             client_kwargs["base_url"] = resolved_base_url
         client = anthropic.Anthropic(**client_kwargs)
-        llm = LlmExtractor(client=client, model=resolved_model)
-        game_def = await asyncio.to_thread(llm.extract, doc.full_text)
-        save_game_definition(game_def)
-        cache.set_game_def(doc.sha256, game_def)
+        cleaner = RuleCleaner(client=client, model=resolved_model)
+        result = await asyncio.to_thread(cleaner.clean, raw_doc.raw_text)
+
+        game_id = raw_doc.sha256[:8]
+        save_game_rules(game_id, result.rules_md, result.metadata)
+        cache.set_rules(raw_doc.sha256, result.rules_md, result.metadata)
 
         return {
             "status": "ok",
-            "game_definition": game_def.model_dump(),
-            "message": f"成功解析: {game_def.name}",
+            "game_id": game_id,
+            "metadata": result.metadata,
+            "message": f"成功解析: {result.metadata.get('game_name', 'Unknown')}",
         }
     except Exception as exc:
         logger.exception("Rules upload failed: %s", exc)
