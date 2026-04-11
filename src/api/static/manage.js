@@ -21,7 +21,7 @@ async function loadGames() {
 
 function renderGames(games) {
   if (!games.length) {
-    gamesGrid.innerHTML = '<div class="empty-text">暂无游戏定义，请上传 PDF 规则书</div>';
+    gamesGrid.innerHTML = '<div class="empty-text">暂无游戏定义，请上传规则书（PDF / DOCX / MD）</div>';
     return;
   }
   gamesGrid.innerHTML = games
@@ -66,53 +66,49 @@ async function openDetail(gameId) {
 }
 
 function renderDetail(def) {
-  const isBuiltin = !def.id || def.source === "builtin";
-  // Check source from the games list
-  const card = gamesGrid.querySelector(`[data-id="${def.id}"]`);
+  const meta = def.metadata || {};
+  const gameId = def.game_id || def.id || "";
+  const card = gamesGrid.querySelector(`[data-id="${gameId}"]`);
   const source = card?.querySelector(".source-builtin") ? "builtin" : "cached";
 
-  detailTitle.textContent = def.name || def.id;
+  detailTitle.textContent = meta.game_name || gameId;
 
   detailBody.innerHTML = `
     <div class="detail-field">
       <label>游戏 ID</label>
-      <div class="readonly-text">${def.id}</div>
+      <div class="readonly-text">${gameId}</div>
     </div>
     <div class="detail-field">
       <label>名称</label>
-      <input type="text" id="edit-name" value="${esc(def.name || "")}" />
-    </div>
-    <div class="detail-field">
-      <label>英文名称</label>
-      <input type="text" id="edit-name-en" value="${esc(def.name_en || "")}" />
+      <input type="text" id="edit-name" value="${esc(meta.game_name || "")}" />
     </div>
     <div class="detail-field">
       <label>简介</label>
-      <textarea id="edit-description" rows="2">${esc(def.description || "")}</textarea>
-    </div>
-    <div class="detail-field">
-      <label>游戏流程概述（帮助 AI 理解游戏玩法，建议 ≤1000 字）</label>
-      <textarea id="edit-gameplay-overview" rows="6">${esc(def.gameplay_overview || "")}</textarea>
+      <textarea id="edit-description" rows="2">${esc(meta.description || "")}</textarea>
     </div>
     <div class="detail-field">
       <label>玩家人数</label>
       <div style="display:flex;gap:0.5rem;align-items:center;">
-        <input type="number" id="edit-min" value="${def.player_count_min}" style="width:60px" min="1" />
+        <input type="number" id="edit-min" value="${meta.player_count_min ?? ""}" style="width:60px" min="1" />
         <span>~</span>
-        <input type="number" id="edit-max" value="${def.player_count_max}" style="width:60px" min="1" />
+        <input type="number" id="edit-max" value="${meta.player_count_max ?? ""}" style="width:60px" min="1" />
       </div>
+    </div>
+    <div class="detail-field">
+      <label>规则书（Markdown）</label>
+      <textarea id="edit-rules" class="rules-textarea" readonly>${esc(def.rules_md || "")}</textarea>
     </div>
     <p id="detail-msg" class="detail-msg"></p>
     <div class="detail-actions">
       <button id="save-btn" class="btn-primary btn-sm">💾 保存修改</button>
       ${source !== "builtin" ? '<button id="delete-btn" class="btn-danger btn-sm">🗑️ 删除游戏</button>' : ""}
-      <a href="/play?game=${def.id}" class="btn-primary btn-sm" style="text-decoration:none;text-align:center;">🎮 开始游戏</a>
+      <a href="/play?game=${gameId}" class="btn-primary btn-sm" style="text-decoration:none;text-align:center;">🎮 开始游戏</a>
     </div>
   `;
 
-  $("#save-btn").addEventListener("click", () => saveDefinition(def.id));
+  $("#save-btn").addEventListener("click", () => saveDefinition(gameId));
   const delBtn = $("#delete-btn");
-  if (delBtn) delBtn.addEventListener("click", () => deleteDefinition(def.id));
+  if (delBtn) delBtn.addEventListener("click", () => deleteDefinition(gameId));
 }
 
 function esc(str) {
@@ -129,10 +125,8 @@ async function saveDefinition(gameId) {
   msg.textContent = "保存中...";
 
   const body = {
-    name: $("#edit-name").value,
-    name_en: $("#edit-name-en").value,
+    game_name: $("#edit-name").value,
     description: $("#edit-description").value,
-    gameplay_overview: $("#edit-gameplay-overview").value,
     player_count_min: parseInt($("#edit-min").value, 10) || 2,
     player_count_max: parseInt($("#edit-max").value, 10) || 6,
   };
@@ -183,7 +177,7 @@ $("#detail-modal .modal-backdrop").addEventListener("click", () =>
   modal.classList.add("hidden")
 );
 
-// ---- PDF 上传 ----
+// ---- 规则书上传（PDF / DOCX / MD）----
 
 (function initUpload() {
   const dropZone = $("#manage-drop-zone");
@@ -202,8 +196,8 @@ $("#detail-modal .modal-backdrop").addEventListener("click", () =>
   let selectedFile = null;
 
   function showFile(file) {
-    if (!file || !file.name.toLowerCase().endsWith(".pdf")) {
-      result.textContent = "❌ 请选择 PDF 文件";
+    if (!file || !/\.(pdf|docx|md)$/i.test(file.name)) {
+      result.textContent = "❌ 请选择 PDF、DOCX 或 MD 文件";
       result.className = "error";
       result.classList.remove("hidden");
       return;
@@ -269,7 +263,7 @@ $("#detail-modal .modal-backdrop").addEventListener("click", () =>
       }
 
       const data = await res.json();
-      const gameName = data.game_definition?.name || "未知游戏";
+      const gameName = data.metadata?.game_name || "未知游戏";
       const cached = data.status === "cached" ? "（使用缓存）" : "";
       result.textContent = `✅ 成功导入: ${gameName} ${cached}`;
       result.className = "success";

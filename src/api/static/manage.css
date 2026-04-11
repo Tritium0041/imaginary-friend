@@ -254,3 +254,18 @@
 .detail-msg.error {
   color: var(--danger);
 }
+
+/* 规则书 Markdown 文本框 */
+.rules-textarea {
+  min-height: 300px;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  background: var(--bg);
+  color: var(--text-soft);
+  padding: 0.8rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  resize: vertical;
+}

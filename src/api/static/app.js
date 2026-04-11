@@ -286,17 +286,17 @@ function flushMessages() {
   els.chatBox.scrollTop = els.chatBox.scrollHeight;
 }
 
-function renderPlayers(players = {}, currentPlayerId = null) {
-  const ids = Object.keys(players);
-  if (!ids.length) {
+function renderPlayers(players = [], currentPlayerId = null) {
+  const list = Array.isArray(players) ? players : Object.values(players);
+  if (!list.length) {
     els.playersList.innerHTML = '<div class="empty-card">暂无玩家数据</div>';
     return;
   }
 
-  const SKIP_KEYS = new Set(["id", "name", "is_human", "has_acted"]);
+  const SKIP_KEYS = new Set(["_id", "id", "name", "is_human", "has_acted"]);
   const frag = document.createDocumentFragment();
-  for (const playerId of ids) {
-    const p = players[playerId];
+  for (const p of list) {
+    const playerId = p._id || p.id || "";
     const card = document.createElement("div");
     card.className = `player-card ${playerId === currentPlayerId ? "current" : ""}`;
     const name = document.createElement("div");
@@ -524,7 +524,7 @@ async function startGame() {
     els.startBtn.disabled = false;
     return;
   }
-  body.game_definition_name = gameDef;
+  body.game_id = gameDef;
 
   try {
     const res = await fetch("/api/games", {
@@ -754,7 +754,7 @@ async function loadGameDefinitions(selectValue) {
 }
 loadGameDefinitions();
 
-// ---- PDF 上传逻辑 ----
+// ---- 规则书上传逻辑（PDF / DOCX / MD）----
 
 (function initUpload() {
   const { dropZone, pdfFile, browseLink, uploadFileInfo, uploadFilename,
@@ -794,10 +794,10 @@ loadGameDefinitions();
     e.preventDefault();
     dropZone.classList.remove("drag-over");
     const file = e.dataTransfer.files[0];
-    if (file && file.name.toLowerCase().endsWith(".pdf")) {
+    if (file && /\.(pdf|docx|md)$/i.test(file.name)) {
       showFile(file);
     } else {
-      uploadResult.textContent = "⚠️ 请上传 PDF 文件";
+      uploadResult.textContent = "⚠️ 请上传 PDF、DOCX 或 MD 文件";
       uploadResult.className = "error";
       uploadResult.classList.remove("hidden");
     }
