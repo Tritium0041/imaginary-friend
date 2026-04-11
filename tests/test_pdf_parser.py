@@ -1,16 +1,11 @@
-"""Tests for PDF parser pipeline (pdf_extractor, cache_manager, llm_extractor prompts)"""
-import hashlib
+"""Tests for PDF parser pipeline (pdf_extractor, cache_manager)"""
 import json
-import os
-import tempfile
 import pytest
 
 import fitz  # PyMuPDF
 
 from src.parser.pdf_extractor import PdfExtractor, StructuredDocument, TextBlock
 from src.parser.cache_manager import CacheManager
-from src.parser.llm_extractor import LlmExtractor, EXTRACTION_PROMPTS
-from src.core.game_definition import GameDefinition
 
 
 # ========== PDF Extractor ==========
@@ -102,104 +97,23 @@ class TestPdfExtractor:
 # ========== Cache Manager ==========
 
 class TestCacheManager:
-    def test_l1_set_and_get(self, tmp_path):
+    def test_set_and_get_rules(self, tmp_path):
         cm = CacheManager(cache_dir=tmp_path / "cache")
-        sha = "abc123"
-        data = {"text": "hello", "pages": 3}
-        cm.set_pdf_text(sha, data)
-        result = cm.get_pdf_text(sha)
-        assert result == data
-
-    def test_l1_miss(self, tmp_path):
-        cm = CacheManager(cache_dir=tmp_path / "cache")
-        assert cm.get_pdf_text("nonexistent") is None
-
-    def test_l2_set_and_get(self, tmp_path):
-        cm = CacheManager(cache_dir=tmp_path / "cache")
-        game_def = GameDefinition(
-            id="test",
-            name="Test",
-            version="1.0",
-            player_count_min=2,
-            player_count_max=4,
-            resources=[],
-            categories=[],
-            object_types=[],
-            phases=[],
-        )
-        cm.set_game_def("sha123", game_def)
-        result = cm.get_game_def("sha123")
+        rules_md = "# Test Game\n\nRules here."
+        metadata = {"game_name": "Test", "player_count_min": 2, "player_count_max": 4}
+        cm.set_rules("sha123", rules_md, metadata)
+        result = cm.get_rules("sha123")
         assert result is not None
-        assert result.name == "Test"
+        assert result[0] == rules_md
+        assert result[1]["game_name"] == "Test"
 
-    def test_l2_miss(self, tmp_path):
+    def test_miss(self, tmp_path):
         cm = CacheManager(cache_dir=tmp_path / "cache")
-        assert cm.get_game_def("nonexistent") is None
-
-    def test_l3_set_and_get_json(self, tmp_path):
-        cm = CacheManager(cache_dir=tmp_path / "cache")
-        tools = [{"name": "tool1"}]
-        cm.set_generated("my_game", "tools.json", tools)
-        result = cm.get_generated("my_game", "tools.json")
-        assert result == tools
-
-    def test_l3_set_and_get_text(self, tmp_path):
-        cm = CacheManager(cache_dir=tmp_path / "cache")
-        prompt = "You are a GM..."
-        cm.set_generated("my_game", "gm_prompt.md", prompt)
-        result = cm.get_generated("my_game", "gm_prompt.md")
-        assert result == prompt
-
-    def test_l3_miss(self, tmp_path):
-        cm = CacheManager(cache_dir=tmp_path / "cache")
-        assert cm.get_generated("nonexistent", "tools.json") is None
-
-    def test_list_cached_games(self, tmp_path):
-        cm = CacheManager(cache_dir=tmp_path / "cache")
-        game_def = GameDefinition(
-            id="test",
-            name="Test Game",
-            version="1.0",
-            player_count_min=2,
-            player_count_max=4,
-            resources=[],
-            categories=[],
-            object_types=[],
-            phases=[],
-        )
-        cm.set_game_def("sha1", game_def)
-        games = cm.list_cached_games()
-        assert len(games) == 1
-        assert games[0]["name"] == "Test Game"
+        assert cm.get_rules("nonexistent") is None
 
     def test_clear_cache(self, tmp_path):
         cm = CacheManager(cache_dir=tmp_path / "cache")
-        cm.set_pdf_text("sha1", {"text": "test"})
-        cm.clear_cache(level=1)
-        assert cm.get_pdf_text("sha1") is None
-
-
-# ========== LLM Extractor (dry run / prompts) ==========
-
-class TestLlmExtractor:
-    def test_extraction_prompts_exist(self):
-        assert "meta" in EXTRACTION_PROMPTS
-        assert "resources" in EXTRACTION_PROMPTS
-        assert "objects" in EXTRACTION_PROMPTS
-        assert "phases" in EXTRACTION_PROMPTS
-        assert "victory_and_mechanics" in EXTRACTION_PROMPTS
-
-    def test_dry_run_returns_all_prompts(self):
-        extractor = LlmExtractor(client="dummy")
-        prompts = extractor.extract_dry_run("Some game rules text...")
-        assert len(prompts) == 5
-        for key, prompt in prompts.items():
-            assert "Some game rules text" in prompt
-
-    def test_prompts_include_text_placeholder(self):
-        for key, template in EXTRACTION_PROMPTS.items():
-            assert "{text}" in template, f"Template '{key}' missing {{text}} placeholder"
-
-    def test_prompts_request_json(self):
-        for key, template in EXTRACTION_PROMPTS.items():
-            assert "JSON" in template, f"Template '{key}' should mention JSON output"
+        cm.set_rules("sha1", "# Rules", {"game_name": "X"})
+        cm.clear_cache()
+        assert cm.get_rules("sha1") is None
+        assert cm.get_rules("sha2") is None

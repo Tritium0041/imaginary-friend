@@ -30,9 +30,6 @@ function renderGames(games) {
     <div class="game-card" data-id="${g.id}">
       <div class="game-card-header">
         <span class="game-card-name">${g.name}</span>
-        <span class="game-card-source ${g.source === "builtin" ? "source-builtin" : "source-cached"}">
-          ${g.source === "builtin" ? "内置" : "导入"}
-        </span>
       </div>
       <div class="game-card-desc">${g.description || "暂无描述"}</div>
       <div class="game-card-meta">
@@ -68,8 +65,6 @@ async function openDetail(gameId) {
 function renderDetail(def) {
   const meta = def.metadata || {};
   const gameId = def.game_id || def.id || "";
-  const card = gamesGrid.querySelector(`[data-id="${gameId}"]`);
-  const source = card?.querySelector(".source-builtin") ? "builtin" : "cached";
 
   detailTitle.textContent = meta.game_name || gameId;
 
@@ -101,14 +96,13 @@ function renderDetail(def) {
     <p id="detail-msg" class="detail-msg"></p>
     <div class="detail-actions">
       <button id="save-btn" class="btn-primary btn-sm">💾 保存修改</button>
-      ${source !== "builtin" ? '<button id="delete-btn" class="btn-danger btn-sm">🗑️ 删除游戏</button>' : ""}
+      <button id="delete-btn" class="btn-danger btn-sm">🗑️ 删除游戏</button>
       <a href="/play?game=${gameId}" class="btn-primary btn-sm" style="text-decoration:none;text-align:center;">🎮 开始游戏</a>
     </div>
   `;
 
   $("#save-btn").addEventListener("click", () => saveDefinition(gameId));
-  const delBtn = $("#delete-btn");
-  if (delBtn) delBtn.addEventListener("click", () => deleteDefinition(gameId));
+  $("#delete-btn").addEventListener("click", () => deleteDefinition(gameId));
 }
 
 function esc(str) {

@@ -1,12 +1,15 @@
 # Universal Board Game Agent System
 
-通用桌游 Agent 系统 — 支持通过上传规则书 PDF 自动适配任意桌游，由 AI 驱动的智能游戏体验。
+通用桌游 Agent 系统 — 支持通过上传规则书（PDF/DOCX/Markdown）自动适配任意桌游，由 AI 驱动的智能游戏体验。
 
 ## 功能特性
 
-- 🎲 **通用桌游引擎** — 通过 GameDefinition 描述任意桌游，自动生成工具集和 GM Prompt
-- 📄 **PDF 规则书解析** — 上传桌游规则书 PDF，AI 自动提取结构化游戏定义
-- 🏛️ **内置示例游戏** — 《时空拍卖行》作为 GameDefinition 范例，演示引擎能力
+- 🎲 **文档驱动架构** — 上传规则书即可开玩，无需结构化定义
+- 📄 **多格式规则书解析** — 支持 PDF、DOCX、Markdown 格式
+- 🗄️ **TinyDB 文档存储** — 灵活的 JSON 文档型状态管理，支持任意桌游数据结构
+- 🔧 **6 个固定工具** — GM 通过 CRUD + 交互工具自主管理游戏状态
+- ⚡ **Prompt Caching** — 静态规则书缓存，降低 API 成本
+- 🏛️ **内置示例游戏** — 《时空拍卖行》(Chronos Auction House)
 - 🎮 单人对战 2-4 个 AI 对手
 - 🤖 GM Agent 由 Claude 大语言模型驱动
 - 💬 自然语言交互
@@ -31,7 +34,7 @@ export ANTHROPIC_API_KEY=your-api-key
 **命令行模式:**
 ```bash
 python main.py
-# 启动后选择已导入的游戏 / 从 PDF 导入新游戏
+# 启动后选择已有游戏 / 从文件导入新游戏（支持 PDF/DOCX/MD）
 ```
 
 **Web 模式:**
@@ -45,28 +48,25 @@ python run_server.py
 ```
 board_game_agent/
 ├── src/
-│   ├── core/              # 通用引擎核心
-│   │   ├── game_definition.py  # GameDefinition 数据模型
-│   │   ├── universal_manager.py # 通用 GameManager
-│   │   ├── model_generator.py   # 动态 Pydantic 模型生成
-│   │   ├── tool_generator.py    # 工具 Schema 自动生成
-│   │   ├── prompt_generator.py  # GM Prompt 自动生成
-│   │   └── game_loader.py       # 游戏加载与发现
-│   ├── parser/            # PDF 规则书解析
-│   │   ├── pdf_extractor.py     # PDF 文本提取
-│   │   ├── llm_extractor.py     # LLM 结构化提取
-│   │   └── cache_manager.py     # 三级缓存管理
+│   ├── core/              # 核心引擎
+│   │   ├── doc_store.py       # TinyDB 文档数据库封装
+│   │   ├── tools.py           # 6 个固定工具定义与执行
+│   │   └── game_loader.py     # 游戏发现与加载
+│   ├── parser/            # 规则书解析
+│   │   ├── pdf_extractor.py   # PDF 文本提取 (PyMuPDF)
+│   │   ├── docx_extractor.py  # DOCX 文本提取 (python-docx)
+│   │   ├── md_extractor.py    # Markdown 文件读取
+│   │   ├── document_parser.py # 多格式统一入口
+│   │   ├── rule_cleaner.py    # LLM 清洗 + 元数据提取
+│   │   └── cache_manager.py   # 两级缓存管理
 │   ├── games/             # 游戏实例
-│   │   └── chronos_auction/     # 内置示例游戏
-│   │       ├── definition.json  # GameDefinition 数据
-│   │       └── adapter.py       # 可选适配器（引擎不依赖）
-│   ├── models/            # 原版数据模型（向后兼容）
-│   ├── tools/             # 原版工具（向后兼容）
+│   │   └── chronos_auction/   # 内置示例游戏
+│   │       ├── rules.md       # 完整 Markdown 规则手册
+│   │       └── metadata.json  # 极简元数据
 │   ├── agents/            # Agent 实现
-│   │   ├── gm_agent.py         # GM Agent
-│   │   └── rules_prompt.md     # 规则提示
+│   │   └── gm_agent.py       # GM Agent (Prompt Caching)
 │   └── api/               # Web API
-│       └── server.py           # FastAPI 服务
+│       └── server.py         # FastAPI 服务
 ├── cache/                 # 缓存目录
 ├── tests/                 # 测试
 ├── docs/                  # 设计文档
@@ -75,59 +75,73 @@ board_game_agent/
 └── requirements.txt       # 依赖
 ```
 
-## 通用引擎架构
+## 架构
 
 ### 核心流程
 
 ```
-PDF 规则书 → PdfExtractor → LlmExtractor → GameDefinition
-                                                  ↓
-                                          ModelGenerator → 动态 Pydantic 模型
-                                          ToolGenerator  → Claude 工具 Schema
-                                          PromptGenerator → GM 系统 Prompt
-                                                  ↓
-                                      UniversalGameManager（原子操作引擎）
-                                                  ↓
-                                           GM Agent（LLM 驱动决策）
+规则书 (PDF/DOCX/MD)
+        ↓
+  DocumentParser → 原始文本提取
+        ↓
+  RuleCleaner (2 轮 LLM)
+    ├── 第 1 轮: 文本清洗 → rules.md (完整 Markdown 规则手册)
+    └── 第 2 轮: 元数据提取 → metadata.json (游戏名、人数等)
+        ↓
+  GMAgent (rules_md + metadata)
+    ├── System Prompt: 角色定义 + 工具规范 + rules.md [缓存]
+    ├── DocStore: TinyDB 内存文档库 (global/players/zones/logs)
+    └── 6 个固定工具: db_find/insert/update/delete + 交互工具
+        ↓
+  GM 自主管理游戏全流程
 ```
 
-### GameDefinition
+### 6 个固定工具
 
-GameDefinition 是整个框架的核心数据结构，描述一个桌游的完整规则：
+| 工具 | 说明 |
+|------|------|
+| `db_find` | 查询 DocStore 数据 |
+| `db_insert` | 插入文档 |
+| `db_update` | 更新文档 (支持 `$set`, `$inc`, `$push`, `$pull`) |
+| `db_delete` | 删除文档 |
+| `request_player_action` | 请求玩家输入 |
+| `broadcast_message` | 广播消息 |
 
-- **资源系统** (resources) — 金币、胜利点、生命值等
-- **分类系统** (categories) — 文物时代、卡牌类型等
-- **游戏对象** (object_types) — 卡牌、棋子、骰子等
-- **区域定义** (zones) — 公共牌池、弃牌堆等
-- **阶段流程** (phases) — 回合结构与阶段顺序
-- **胜利条件** (victory) — 计分公式与终局条件
+### DocStore 数据表
+
+| 表名 | 说明 |
+|------|------|
+| `global` | 全局游戏状态（回合数、阶段等） |
+| `players` | 玩家数据（资源、手牌、状态等） |
+| `zones` | 公共区域（牌池、弃牌堆等） |
+| `logs` | 游戏日志（追加写入） |
 
 ### API 端点
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/games` | POST | 创建游戏（支持 `game_definition_name` 参数） |
-| `/api/games/definitions` | GET | 列出所有可用 GameDefinition |
-| `/api/games/definitions/{id}` | GET | 获取指定 GameDefinition |
-| `/api/games/definitions/{id}` | PUT | 更新（微调）GameDefinition |
-| `/api/games/upload-rules` | POST | 上传 PDF 规则书，解析为 GameDefinition |
-| `/api/games/{game_id}` | GET | 获取游戏状态 |
+| `/api/games` | POST | 创建游戏（`game_id` 参数） |
+| `/api/games/definitions` | GET | 列出所有可用游戏 |
+| `/api/games/definitions/{id}` | GET | 获取游戏规则 |
+| `/api/games/definitions/{id}` | DELETE | 删除用户上传的游戏 |
+| `/api/games/upload-rules` | POST | 上传规则书 (PDF/DOCX/MD) |
+| `/api/games/{game_id}` | GET | 获取游戏状态 (DocStore 快照) |
 | `/api/games/{game_id}/action` | POST | 执行游戏行动 |
 | `/ws/{game_id}` | WebSocket | 实时游戏通信 |
 
 ## 日志与缓存
 
 - **日志**: 默认输出到控制台与 `logs/app.log`，可通过 `LOG_LEVEL`、`LOG_FILE` 环境变量调整
-- **缓存**: 三级缓存系统
-  - L1: PDF 文本缓存 (避免重复提取)
-  - L2: GameDefinition 缓存 (避免重复 LLM 调用)
-  - L3: 生成产物缓存 (工具 Schema + Prompt)
+- **缓存**: 两级缓存系统
+  - L1: 原始文本缓存（避免重复提取 PDF/DOCX）
+  - L2: 清洗后的 rules.md + metadata.json
 
 ## 技术栈
 
 - **后端**: Python 3.12 + FastAPI + Claude API (Anthropic SDK)
-- **数据模型**: Pydantic v2 (含动态模型生成)
+- **状态存储**: TinyDB (内存模式，JSON 文档型)
 - **PDF 解析**: PyMuPDF
+- **DOCX 解析**: python-docx
 - **前端**: 原生 HTML/CSS/ES Modules
 - **通信**: WebSocket 实时流式推送
 

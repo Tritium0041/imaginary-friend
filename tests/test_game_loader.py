@@ -3,8 +3,7 @@ import json
 import pytest
 from pathlib import Path
 
-from src.core.game_loader import discover_games, load_game_definition, save_game_definition
-from src.core.game_definition import GameDefinition
+from src.core.game_loader import discover_games, load_game_rules, save_game_rules
 
 
 class TestGameLoader:
@@ -18,40 +17,32 @@ class TestGameLoader:
         for g in games:
             assert "id" in g
             assert "name" in g
-            assert "source" in g
             assert "path" in g
 
     def test_load_chronos(self):
-        gd = load_game_definition("chronos_auction")
-        assert gd is not None
-        assert gd.id == "chronos_auction"
-        assert gd.name == "时空拍卖行"
+        result = load_game_rules("chronos_auction")
+        assert result is not None
+        rules_md, metadata = result
+        assert metadata["game_name"] == "时空拍卖行"
+        assert "拍卖" in rules_md
 
     def test_load_nonexistent(self):
-        gd = load_game_definition("nonexistent_game_xyz")
-        assert gd is None
+        result = load_game_rules("nonexistent_game_xyz")
+        assert result is None
 
-    def test_save_and_discover(self, tmp_path):
-        gd = GameDefinition(
-            id="test_save",
-            name="Test Save Game",
-            version="1.0",
-            player_count_min=2,
-            player_count_max=4,
-            resources=[],
-            categories=[],
-            object_types=[],
-            phases=[],
-        )
-        path = save_game_definition(gd, target_dir=tmp_path)
+    def test_save_and_load(self, tmp_path):
+        rules_md = "# Test Game\n\nRules here."
+        metadata = {"game_name": "Test Save Game", "player_count_min": 2, "player_count_max": 4}
+        path = save_game_rules("test_save", rules_md, metadata, target_dir=tmp_path)
         assert path.exists()
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["id"] == "test_save"
-        assert data["name"] == "Test Save Game"
+        assert (path / "rules.md").exists()
+        assert (path / "metadata.json").exists()
+        data = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
+        assert data["game_name"] == "Test Save Game"
 
 
 class TestNewAPIEndpoints:
-    """Test the new game definition API endpoints using FastAPI TestClient"""
+    """Test the new game API endpoints using FastAPI TestClient"""
 
     @pytest.fixture
     def client(self):
@@ -71,8 +62,9 @@ class TestNewAPIEndpoints:
         resp = client.get("/api/games/definitions/chronos_auction")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["id"] == "chronos_auction"
-        assert data["name"] == "时空拍卖行"
+        assert data["game_id"] == "chronos_auction"
+        assert data["metadata"]["game_name"] == "时空拍卖行"
+        assert "rules_md" in data
 
     def test_get_definition_not_found(self, client):
         resp = client.get("/api/games/definitions/nonexistent_xyz")
@@ -85,7 +77,7 @@ class TestNewAPIEndpoints:
         assert "通用桌游" in data["message"]
         assert data["version"] == "0.3.0"
 
-    def test_upload_rules_rejects_non_pdf(self, client):
+    def test_upload_rules_rejects_unsupported(self, client):
         resp = client.post(
             "/api/games/upload-rules",
             files={"file": ("test.txt", b"hello", "text/plain")},

@@ -8,3 +8,4 @@ __pycache__/
 .env
 .env.*
 .playwright-mcp
+cache/

@@ -453,7 +453,7 @@ def _build_html_page() -> str:
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>通用桌游 Agent · 实时对局</title>
-  <link rel="stylesheet" href="/static/styles.css?v=2" />
+  <link rel="stylesheet" href="/static/styles.css?v=3" />
 </head>
 <body>
   <main class="app-shell">
@@ -511,31 +511,6 @@ def _build_html_page() -> str:
             <option value="">加载中...</option>
           </select>
         </label>
-      </div>
-      <div class="upload-section">
-        <p class="upload-label">📄 导入新桌游（上传 PDF / DOCX / MD 规则书）</p>
-        <div id="drop-zone" class="drop-zone">
-          <input id="pdf-file" type="file" accept=".pdf,.docx,.md" hidden />
-          <div class="drop-zone-inner">
-            <span class="drop-icon">📁</span>
-            <p>将规则书拖拽到此处，或 <a id="browse-link" href="#">点击选择文件</a></p>
-          </div>
-        </div>
-        <div id="upload-file-info" class="upload-file-info hidden">
-          <span id="upload-filename"></span>
-          <button id="upload-btn" class="btn-primary btn-sm" type="button">上传并解析</button>
-          <button id="upload-cancel-btn" class="btn-cancel btn-sm" type="button">取消</button>
-        </div>
-        <div id="upload-progress-wrap" class="progress-wrap hidden">
-          <div class="progress-meta">
-            <span id="upload-progress-label">正在解析规则书...</span>
-            <span id="upload-progress-value">处理中</span>
-          </div>
-          <div class="progress-track">
-            <div id="upload-progress-bar" class="progress-bar indeterminate"></div>
-          </div>
-        </div>
-        <p id="upload-result" class="hidden"></p>
       </div>
       <button id="start-btn" class="btn-primary">开始游戏</button>
       <div id="startup-progress-wrap" class="progress-wrap hidden">
@@ -608,7 +583,7 @@ def _build_html_page() -> str:
     </section>
   </main>
 
-  <script type="module" src="/static/app.js?v=2"></script>
+  <script type="module" src="/static/app.js?v=3"></script>
 </body>
 </html>
 """
@@ -625,8 +600,8 @@ def _build_manage_page() -> str:
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>游戏管理 · 通用桌游 Agent</title>
-  <link rel="stylesheet" href="/static/styles.css?v=2" />
-  <link rel="stylesheet" href="/static/manage.css?v=2" />
+  <link rel="stylesheet" href="/static/styles.css?v=3" />
+  <link rel="stylesheet" href="/static/manage.css?v=3" />
 </head>
 <body>
   <main class="app-shell">
@@ -701,7 +676,7 @@ def _build_manage_page() -> str:
     </div>
   </main>
 
-  <script type="module" src="/static/manage.js?v=2"></script>
+  <script type="module" src="/static/manage.js?v=3"></script>
 </body>
 </html>
 """
@@ -911,7 +886,7 @@ async def update_game_definition(game_id: str, body: dict[str, Any]):
 
 @app.delete("/api/games/definitions/{game_id}")
 async def delete_game_definition(game_id: str):
-    """删除缓存的游戏（内置游戏不可删除）"""
+    """删除指定游戏"""
     from ..core.game_loader import discover_games
     import shutil
 
@@ -919,8 +894,6 @@ async def delete_game_definition(game_id: str):
     target = next((g for g in games if g["id"] == game_id), None)
     if target is None:
         raise HTTPException(status_code=404, detail=f"游戏不存在: {game_id}")
-    if target["source"] == "builtin":
-        raise HTTPException(status_code=403, detail="内置游戏不可删除")
 
     path = Path(target["path"])
     if path.is_dir() and path.exists():

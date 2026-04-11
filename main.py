@@ -1,6 +1,6 @@
 """
 游戏主入口 - 命令行界面
-基于通用桌游引擎（GameDefinition + UniversalGameManager）
+基于文档型存储引擎（DocStore + rules.md）
 """
 from __future__ import annotations
 
@@ -30,9 +30,7 @@ def print_banner():
 
 
 def select_game() -> str:
-    """
-    显示游戏选择菜单，返回选中的 game_id。
-    """
+    """显示游戏选择菜单，返回选中的 game_id。"""
     from src.core.game_loader import discover_games
 
     games = discover_games()
@@ -45,7 +43,7 @@ def select_game() -> str:
     for idx, g in enumerate(games, 1):
         source_tag = "内置" if g["source"] == "builtin" else "导入"
         print(f"  {idx}) 🎲 {g['name']}（{source_tag}）")
-    print(f"  {len(games) + 1}) 📄 从 PDF 规则书导入新游戏")
+    print(f"  {len(games) + 1}) 📄 从规则书导入新游戏（PDF/DOCX/MD）")
 
     while True:
         try:
@@ -56,7 +54,7 @@ def select_game() -> str:
                 print(f"\n已选择: {selected['name']}")
                 return selected["id"]
             if choice_num == len(games) + 1:
-                result = _import_from_pdf()
+                result = _import_from_file()
                 if result:
                     return result
                 continue
@@ -65,47 +63,56 @@ def select_game() -> str:
             print("请输入有效数字")
 
 
-def _import_from_pdf() -> Optional[str]:
-    """从 PDF 导入新游戏（需要 API Key）"""
-    pdf_path = input("\n请输入 PDF 规则书路径: ").strip()
-    if not pdf_path or not Path(pdf_path).exists():
+def _import_from_file() -> Optional[str]:
+    """从规则书文件导入新游戏（支持 PDF/DOCX/MD）"""
+    file_path = input("\n请输入规则书路径（支持 .pdf .docx .md）: ").strip()
+    if not file_path or not Path(file_path).exists():
         print("❌ 文件不存在")
         return None
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
-        print("❌ 需要设置 ANTHROPIC_API_KEY 来解析 PDF")
+        print("❌ 需要设置 ANTHROPIC_API_KEY 来解析规则书")
         return None
 
-    print("\n📄 正在解析 PDF 规则书...")
+    print("\n📄 正在解析规则书...")
     try:
         import anthropic
-        from src.parser.pdf_extractor import PdfExtractor
-        from src.parser.llm_extractor import LlmExtractor
+        from src.parser.document_parser import parse_file
+        from src.parser.rule_cleaner import RuleCleaner
         from src.parser.cache_manager import CacheManager
-        from src.core.game_loader import save_game_definition
+        from src.core.game_loader import save_game_rules
 
-        extractor = PdfExtractor()
-        doc = extractor.extract(pdf_path)
-        print(f"  ✅ 提取文本完成 ({doc.page_count} 页, {len(doc.blocks)} 个文本块)")
+        raw_doc = parse_file(file_path)
+        print(f"  ✅ 提取文本完成 ({len(raw_doc.raw_text)} 字符)")
 
         cache = CacheManager()
-        cached = cache.get_game_def(doc.sha256)
+
+        cached = cache.get_rules(raw_doc.sha256)
         if cached:
-            print(f"  ✅ 使用缓存的 GameDefinition: {cached.name}")
-            return cached.id
+            rules_md, metadata = cached
+            game_name = metadata.get("game_name", "Unknown")
+            print(f"  ✅ 使用缓存: {game_name}")
+            game_id = raw_doc.sha256[:8]
+            save_game_rules(game_id, rules_md, metadata)
+            return game_id
 
         client = anthropic.Anthropic(api_key=api_key)
-        llm = LlmExtractor(client=client)
-        print("  🤖 正在用 AI 分析游戏规则（这可能需要 1-2 分钟）...")
-        game_def = llm.extract(doc.full_text)
-        save_game_definition(game_def)
-        cache.set_game_def(doc.sha256, game_def)
-        print(f"  ✅ 成功解析游戏: {game_def.name}")
-        return game_def.id
+        cleaner = RuleCleaner(client=client)
+        print("  🤖 正在用 AI 清洗规则书（这可能需要 1-2 分钟）...")
+        result = cleaner.clean(raw_doc.raw_text)
+
+        cache.set_rules(raw_doc.sha256, result.rules_md, result.metadata)
+
+        game_id = raw_doc.sha256[:8]
+        save_game_rules(game_id, result.rules_md, result.metadata)
+
+        game_name = result.metadata.get("game_name", "Unknown")
+        print(f"  ✅ 成功解析游戏: {game_name}")
+        return game_id
 
     except Exception as e:
-        print(f"❌ PDF 解析失败: {e}")
+        print(f"❌ 规则书解析失败: {e}")
         return None
 
 
@@ -132,30 +139,34 @@ def get_player_setup(game_name: str) -> list[tuple[str, bool]]:
 
 
 def run_game_cli(game_id: str, players: list[tuple[str, bool]]):
-    """运行通用引擎游戏（CLI 模式）"""
+    """运行游戏（CLI 模式）"""
     logger = logging.getLogger(__name__)
-    from src.core.game_loader import load_game_definition
+    from src.core.game_loader import load_game_rules
 
-    game_def = load_game_definition(game_id)
-    if game_def is None:
-        print(f"❌ 找不到游戏定义: {game_id}")
+    result = load_game_rules(game_id)
+    if result is None:
+        print(f"❌ 找不到游戏: {game_id}")
         sys.exit(1)
 
-    print(f"\n正在初始化 {game_def.name}...")
+    rules_md, metadata = result
+    game_name = metadata.get("game_name", game_id)
+
+    print(f"\n正在初始化 {game_name}...")
     logger.info(
         "CLI game initialization started (game=%s)",
-        game_def.name,
+        game_name,
         extra={"game_id": "-", "action_id": "cli-start"},
     )
 
     gm = GMAgent(
+        rules_md=rules_md,
+        metadata=metadata,
         config=GMConfig(),
-        game_definition=game_def,
     )
 
     try:
         gm.start_game(players)
-        print(f"\n🎲 {game_def.name} 已就绪！")
+        print(f"\n🎲 {game_name} 已就绪！")
         _game_loop(gm)
     except KeyboardInterrupt:
         logger.warning(
@@ -205,9 +216,9 @@ def run_game():
 
     game_id = select_game()
 
-    from src.core.game_loader import load_game_definition
-    game_def = load_game_definition(game_id)
-    game_name = game_def.name if game_def else game_id
+    from src.core.game_loader import load_game_rules
+    result = load_game_rules(game_id)
+    game_name = result[1].get("game_name", game_id) if result else game_id
 
     players = get_player_setup(game_name)
     print(f"\n游戏玩家: {', '.join(name for name, _ in players)}")

@@ -12,49 +12,49 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.api import server
+from src.core.doc_store import DocStore
 
 
 class FakeGMAgent:
     """避免外部模型调用的测试替身。"""
 
-    def __init__(self, config=None, on_output=None, api_key=None, base_url=None, game_definition=None):
+    def __init__(self, rules_md="", metadata=None, config=None, on_output=None, api_key=None, base_url=None):
         self.config = config
         self.on_output = on_output or (lambda _msg: None)
         self.api_key = api_key
         self.base_url = base_url
-        self.game_definition = game_definition
+        self.rules_md = rules_md
+        self.metadata = metadata or {}
         self.session = None
-        # Fake player objects with is_human attribute
-        _p0 = SimpleNamespace(
-            is_human=True,
-            cards=[
-                SimpleNamespace(
-                    model_dump=lambda: {"id": "c1", "name": "Fake Card", "description": "desc", "effect": "effect"}
-                )
-            ],
-            artifacts=[],
-        )
-        _p1 = SimpleNamespace(is_human=False, cards=[], artifacts=[])
-        _p2 = SimpleNamespace(is_human=False, cards=[], artifacts=[])
-        _players = {"player_0": _p0, "player_1": _p1, "player_2": _p2}
-        self.universal_mgr = SimpleNamespace(
-            get_game_state=lambda: {
-                "current_round": 1,
-                "current_phase": "setup",
-                "players": {
-                    pid: {"name": f"P{i}", "is_human": p.is_human, "artifacts": []}
-                    for i, (pid, p) in enumerate(_players.items())
-                },
-            },
-            game_state=SimpleNamespace(players=_players),
-        )
+        self.doc_store = DocStore()
 
     def start_game(self, player_names, game_id=None):
         gid = game_id or "progress01"
         self.session = SimpleNamespace(
             game_id=gid,
             is_waiting_for_human=True,
+            messages=[],
+            api_request_count=0,
+            api_input_tokens=0,
+            api_output_tokens=0,
+            api_cache_creation_input_tokens=0,
+            api_cache_read_input_tokens=0,
+            player_info={
+                "player_0": {"name": "测试玩家", "is_human": True},
+                "player_1": {"name": "AI玩家1", "is_human": False},
+                "player_2": {"name": "AI玩家2", "is_human": False},
+            },
         )
+        # Initialize DocStore with some test data
+        self.doc_store.insert("global", {"_id": "global_state", "current_round": 1, "current_phase": "setup"})
+        self.doc_store.insert("players", {
+            "_id": "player_0", "name": "测试玩家", "gold": 20, "vp": 0,
+            "hand": [{"id": "c1", "name": "Fake Card", "description": "desc", "effect": "effect"}],
+            "artifacts": [],
+        })
+        self.doc_store.insert("players", {"_id": "player_1", "name": "AI玩家1", "gold": 20, "vp": 0, "hand": [], "artifacts": []})
+        self.doc_store.insert("players", {"_id": "player_2", "name": "AI玩家2", "gold": 20, "vp": 0, "hand": [], "artifacts": []})
+
         self.on_output("fake-startup-message")
         self.on_output(
             {
@@ -112,7 +112,7 @@ def test_create_game_returns_progress_events(monkeypatch):
                 "api_key": "test-key",
                 "base_url": "",
                 "model": "fake-model",
-                "game_definition_name": "chronos_auction",
+                "game_id": "chronos_auction",
             },
         )
         assert response.status_code == 200
@@ -153,7 +153,7 @@ def test_action_returns_progress_events(monkeypatch):
                 "api_key": "test-key",
                 "base_url": "",
                 "model": "fake-model",
-                "game_definition_name": "chronos_auction",
+                "game_id": "chronos_auction",
             },
         )
         assert create_response.status_code == 200
@@ -181,31 +181,6 @@ def test_action_returns_progress_events(monkeypatch):
         )
 
 
-def test_public_state_includes_player_artifacts(monkeypatch):
-    monkeypatch.setattr(server, "GMAgent", FakeGMAgent)
-    server.active_games.clear()
-
-    with TestClient(server.app) as client:
-        create_response = client.post(
-            "/api/games",
-            json={
-                "player_name": "测试玩家",
-                "ai_count": 2,
-                "api_key": "test-key",
-                "base_url": "",
-                "model": "fake-model",
-                "game_definition_name": "chronos_auction",
-            },
-        )
-        assert create_response.status_code == 200
-        payload = create_response.json()
-        players = payload["state"]["players"]
-        assert players
-        sample_player = next(iter(players.values()))
-        assert "artifacts" in sample_player
-        assert isinstance(sample_player["artifacts"], list)
-
-
 def test_state_includes_viewer_hand_cards(monkeypatch):
     monkeypatch.setattr(server, "GMAgent", FakeGMAgent)
     server.active_games.clear()
@@ -219,7 +194,7 @@ def test_state_includes_viewer_hand_cards(monkeypatch):
                 "api_key": "test-key",
                 "base_url": "",
                 "model": "fake-model",
-                "game_definition_name": "chronos_auction",
+                "game_id": "chronos_auction",
             },
         )
         assert create_response.status_code == 200
