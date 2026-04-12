@@ -273,6 +273,31 @@ function flushMessages() {
   els.chatBox.scrollTop = els.chatBox.scrollHeight;
 }
 
+const ZONE_NAME_MAP = {
+  artifact_deck: "文物牌库",
+  function_deck: "功能牌库",
+  event_deck: "事件牌库",
+  auction_zone: "拍卖区",
+  event_zone: "事件区",
+  discard_pile: "弃牌堆",
+  system_warehouse: "系统仓库",
+};
+
+const GLOBAL_SKIP_KEYS = new Set([
+  "_id", "game_id", "current_player", "starting_player",
+  "start_player_index",
+]);
+
+function friendlyZoneName(id) {
+  return ZONE_NAME_MAP[id] || id;
+}
+
+function extractGlobal(payload) {
+  const arr = payload.global;
+  if (Array.isArray(arr) && arr.length) return arr[0];
+  return {};
+}
+
 function renderPlayers(players = [], currentPlayerId = null) {
   const list = Array.isArray(players) ? players : Object.values(players);
   if (!list.length) {
@@ -280,16 +305,17 @@ function renderPlayers(players = [], currentPlayerId = null) {
     return;
   }
 
-  const SKIP_KEYS = new Set(["_id", "id", "name", "is_human", "has_acted"]);
+  const SKIP_KEYS = new Set(["_id", "id", "name", "is_human", "has_acted", "type", "hand"]);
   const frag = document.createDocumentFragment();
   for (const p of list) {
     const playerId = p._id || p.id || "";
     const card = document.createElement("div");
     card.className = `player-card ${playerId === currentPlayerId ? "current" : ""}`;
     const name = document.createElement("div");
-    name.textContent = p.name ?? playerId;
+    const displayName = p.name ?? playerId;
+    const typeLabel = p.type === "human" ? "👤" : "🤖";
+    name.textContent = `${typeLabel} ${displayName}`;
 
-    // 动态渲染所有资源型字段（数字类型）
     const stats = document.createElement("div");
     stats.className = "meta";
     const statParts = [];
@@ -297,18 +323,22 @@ function renderPlayers(players = [], currentPlayerId = null) {
       if (SKIP_KEYS.has(key)) continue;
       if (typeof val === "number") {
         statParts.push(`${key}: ${val}`);
+      } else if (typeof val === "object" && val !== null && !Array.isArray(val)) {
+        const subParts = Object.entries(val).map(([k, v]) => `${k}:${v}`).join("/");
+        if (subParts) statParts.push(`${key}: ${subParts}`);
       }
     }
     stats.textContent = statParts.join(" · ") || "无资源";
 
-    // 动态渲染所有列表型字段（对象数组）
     const itemsDiv = document.createElement("div");
     itemsDiv.className = "meta";
     const itemParts = [];
     for (const [key, val] of Object.entries(p)) {
       if (SKIP_KEYS.has(key)) continue;
       if (Array.isArray(val)) {
-        itemParts.push(`${key}: ${val.length}`);
+        const names = val.slice(0, 3).map((v) => v?.name || v?.card_id || "?").join(", ");
+        const suffix = val.length > 3 ? `… 共${val.length}件` : "";
+        itemParts.push(`${key}(${val.length}): ${names}${suffix}`);
       }
     }
     if (itemParts.length) {
@@ -323,90 +353,248 @@ function renderPlayers(players = [], currentPlayerId = null) {
   els.playersList.appendChild(frag);
 }
 
-function renderViewerHand(cards = []) {
-  const handCards = Array.isArray(cards) ? cards : [];
+function renderViewerHand(handCards = [], viewerPlayerData = null) {
+  // Count all viewer items: hand cards + other array fields from player data
+  const VIEWER_SKIP_KEYS = new Set(["_id", "id", "name", "type", "is_human", "has_acted"]);
+  let totalItems = 0;
+  const sections = [];
+
+  // 1) Hand cards (from viewer_hand_items for backward compat)
+  const cards = Array.isArray(handCards) ? handCards : [];
+  if (cards.length) {
+    totalItems += cards.length;
+    sections.push({ label: "手牌", tag: "手牌", items: cards, type: "card" });
+  }
+
+  // 2) Other array fields from viewer_player_data (artifacts, etc.)
+  if (viewerPlayerData && typeof viewerPlayerData === "object") {
+    for (const [key, val] of Object.entries(viewerPlayerData)) {
+      if (VIEWER_SKIP_KEYS.has(key) || key === "hand") continue;
+      if (Array.isArray(val) && val.length > 0) {
+        totalItems += val.length;
+        sections.push({ label: friendlyZoneName(key) || key, tag: key, items: val, type: "card" });
+      }
+    }
+  }
+
+  // 3) Numeric stats from viewer_player_data (gold, vp, etc.)
+  const statParts = [];
+  if (viewerPlayerData && typeof viewerPlayerData === "object") {
+    for (const [key, val] of Object.entries(viewerPlayerData)) {
+      if (VIEWER_SKIP_KEYS.has(key)) continue;
+      if (typeof val === "number") {
+        statParts.push({ key, val });
+      } else if (typeof val === "object" && val !== null && !Array.isArray(val)) {
+        const sub = Object.entries(val).map(([k, v]) => `${k}:${v}`).join("/");
+        if (sub) statParts.push({ key, val: sub });
+      }
+    }
+  }
+
   if (els.viewerHandCount) {
-    els.viewerHandCount.textContent = `${handCards.length} 张`;
+    els.viewerHandCount.textContent = `${totalItems} 件`;
   }
   if (!els.viewerHandList) return;
 
-  if (!handCards.length) {
-    els.viewerHandList.innerHTML = '<div class="hand-empty">暂无手牌</div>';
+  if (!sections.length && !statParts.length) {
+    els.viewerHandList.innerHTML = '<div class="hand-empty">暂无物品</div>';
     return;
   }
 
   const frag = document.createDocumentFragment();
-  for (const cardInfo of handCards) {
-    const row = document.createElement("div");
-    row.className = "hand-card";
 
-    const cardTop = document.createElement("div");
-    cardTop.className = "hand-card-top";
-
-    const cardName = document.createElement("h4");
-    cardName.className = "hand-card-name";
-    cardName.textContent = cardInfo?.name || cardInfo?.id || "未知物品";
-
-    const tag = document.createElement("span");
-    tag.className = "hand-card-tag";
-    tag.textContent = "手牌";
-
-    cardTop.append(cardName, tag);
-
-    const desc = (cardInfo?.description || "").trim();
-    const effect = (cardInfo?.effect || "").trim();
-    const detail = document.createElement("div");
-    detail.className = "hand-card-desc";
-    detail.textContent = desc || "无描述";
-
-    row.append(cardTop, detail);
-
-    if (effect) {
-      const effectLine = document.createElement("div");
-      effectLine.className = "hand-card-effect";
-      effectLine.textContent = effect;
-      row.appendChild(effectLine);
-    }
-
-    frag.appendChild(row);
+  // Player resource stats bar
+  if (statParts.length) {
+    const statsBar = document.createElement("div");
+    statsBar.className = "viewer-stats-bar";
+    statsBar.innerHTML = statParts
+      .map((s) => `<span class="viewer-stat"><b>${s.key}</b> ${s.val}</span>`)
+      .join("");
+    frag.appendChild(statsBar);
   }
+
+  // Sections (hand, artifacts, etc.)
+  for (const sec of sections) {
+    const secDiv = document.createElement("div");
+    secDiv.className = "viewer-section";
+    const secTitle = document.createElement("div");
+    secTitle.className = "viewer-section-title";
+    secTitle.textContent = `${sec.label} (${sec.items.length})`;
+    secDiv.appendChild(secTitle);
+
+    for (const item of sec.items) {
+      const row = document.createElement("div");
+      row.className = "hand-card";
+
+      const cardTop = document.createElement("div");
+      cardTop.className = "hand-card-top";
+      const cardName = document.createElement("h4");
+      cardName.className = "hand-card-name";
+
+      let displayName;
+      if (typeof item === "string") {
+        displayName = item;
+      } else if (typeof item === "object" && item !== null) {
+        displayName = item.name || item.card_name || item.card_id || item.id || item._id || "未知";
+      } else {
+        displayName = String(item);
+      }
+      cardName.textContent = displayName;
+
+      const tag = document.createElement("span");
+      tag.className = "hand-card-tag";
+      tag.textContent = sec.tag;
+      cardTop.append(cardName, tag);
+      row.appendChild(cardTop);
+
+      // Description and effect (for dict items)
+      if (typeof item === "object" && item !== null) {
+        const desc = (item.description || item.desc || "").toString().trim();
+        const effect = (item.effect || "").toString().trim();
+        if (desc) {
+          const descDiv = document.createElement("div");
+          descDiv.className = "hand-card-desc";
+          descDiv.textContent = desc;
+          row.appendChild(descDiv);
+        }
+        if (effect) {
+          const effectDiv = document.createElement("div");
+          effectDiv.className = "hand-card-effect";
+          effectDiv.textContent = effect;
+          row.appendChild(effectDiv);
+        }
+        // Extra fields as meta
+        const extraParts = [];
+        const CARD_SKIP = new Set(["name", "card_name", "card_id", "id", "_id", "description", "desc", "effect"]);
+        for (const [k, v] of Object.entries(item)) {
+          if (CARD_SKIP.has(k)) continue;
+          if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+            extraParts.push(`${k}: ${v}`);
+          }
+        }
+        if (extraParts.length) {
+          const metaDiv = document.createElement("div");
+          metaDiv.className = "hand-card-meta";
+          metaDiv.textContent = extraParts.join(" · ");
+          row.appendChild(metaDiv);
+        }
+      }
+
+      secDiv.appendChild(row);
+    }
+    frag.appendChild(secDiv);
+  }
+
   els.viewerHandList.innerHTML = "";
   els.viewerHandList.appendChild(frag);
 }
 
-function renderZones(zones = {}) {
+function renderZones(zonesDocs = [], globalDoc = {}) {
   const container = els.zoneItems;
   if (!container) return;
-  const entries = Object.entries(zones);
-  if (!entries.length) {
-    container.innerHTML = '<div class="empty-card">暂无公共物品</div>';
-    return;
-  }
 
   const frag = document.createDocumentFragment();
-  for (const [zoneId, items] of entries) {
-    if (!Array.isArray(items) || !items.length) continue;
-    for (const item of items) {
-      const box = document.createElement("div");
-      box.className = "zone-item";
-      const title = document.createElement("div");
-      title.className = "title";
-      title.textContent = item?.name ?? item?.id ?? "未知物品";
-      const meta = document.createElement("div");
-      meta.className = "meta";
-      const metaParts = [];
-      metaParts.push(zoneId);
-      for (const [k, v] of Object.entries(item)) {
-        if (k === "id" || k === "name") continue;
+
+  // Build a map: zone_id -> { meta: zone doc, items: [] from global }
+  const zoneMap = new Map();
+
+  // Seed from zones docs
+  const zonesArr = Array.isArray(zonesDocs) ? zonesDocs : [];
+  for (const zone of zonesArr) {
+    const zid = zone._id || zone.id || "";
+    if (!zid) continue;
+    zoneMap.set(zid, { meta: zone, items: [] });
+  }
+
+  // Match global array fields to zones
+  for (const [key, val] of Object.entries(globalDoc)) {
+    if (GLOBAL_SKIP_KEYS.has(key)) continue;
+    if (!Array.isArray(val) || !val.length) continue;
+    if (typeof val[0] !== "object") continue;
+    if (!zoneMap.has(key)) {
+      zoneMap.set(key, { meta: null, items: [] });
+    }
+    zoneMap.get(key).items = val;
+  }
+
+  for (const [zoneId, { meta, items }] of zoneMap) {
+    const group = document.createElement("div");
+    group.className = "zone-group";
+
+    // Zone header
+    const header = document.createElement("div");
+    header.className = "zone-group-header";
+    const title = document.createElement("span");
+    title.className = "zone-group-name";
+    title.textContent = friendlyZoneName(zoneId);
+    header.appendChild(title);
+
+    // Meta badge (remaining/count/type)
+    if (meta) {
+      const badge = document.createElement("span");
+      badge.className = "zone-group-badge";
+      const parts = [];
+      for (const [k, v] of Object.entries(meta)) {
+        if (k === "_id" || k === "id") continue;
         if (typeof v === "string" || typeof v === "number") {
-          metaParts.push(`${k}: ${v}`);
+          parts.push(`${k}: ${v}`);
         }
       }
-      meta.textContent = metaParts.join(" · ");
-      box.append(title, meta);
-      frag.appendChild(box);
+      if (items.length && !parts.some((p) => p.startsWith("count"))) {
+        parts.unshift(`${items.length} 件`);
+      }
+      badge.textContent = parts.join(" · ");
+      header.appendChild(badge);
+    } else if (items.length) {
+      const badge = document.createElement("span");
+      badge.className = "zone-group-badge";
+      badge.textContent = `${items.length} 件`;
+      header.appendChild(badge);
     }
+
+    group.appendChild(header);
+
+    // Zone items
+    if (items.length) {
+      const itemsWrap = document.createElement("div");
+      itemsWrap.className = "zone-group-items";
+      for (const item of items) {
+        const box = document.createElement("div");
+        box.className = "zone-item";
+        const itemTitle = document.createElement("div");
+        itemTitle.className = "title";
+        itemTitle.textContent = item?.name || item?.card_name || item?.card_id || item?._id || "未知物品";
+        box.appendChild(itemTitle);
+
+        const metaParts = [];
+        const ITEM_SKIP = new Set(["name", "card_name", "card_id", "_id"]);
+        for (const [k, v] of Object.entries(item)) {
+          if (ITEM_SKIP.has(k)) continue;
+          if (Array.isArray(v)) {
+            metaParts.push(`${k}: ${v.join(", ")}`);
+          } else if (typeof v === "string" || typeof v === "number") {
+            metaParts.push(`${k}: ${v}`);
+          }
+        }
+        if (metaParts.length) {
+          const metaDiv = document.createElement("div");
+          metaDiv.className = "meta";
+          metaDiv.textContent = metaParts.join(" · ");
+          box.appendChild(metaDiv);
+        }
+        itemsWrap.appendChild(box);
+      }
+      group.appendChild(itemsWrap);
+    } else {
+      const empty = document.createElement("div");
+      empty.className = "zone-group-empty";
+      empty.textContent = "空";
+      group.appendChild(empty);
+    }
+
+    frag.appendChild(group);
   }
+
   if (!frag.childNodes.length) {
     container.innerHTML = '<div class="empty-card">暂无公共物品</div>';
     return;
@@ -417,20 +605,18 @@ function renderZones(zones = {}) {
 
 function renderState(payload) {
   if (!payload || payload.error) return;
-  els.roundNumber.textContent = payload.current_round ?? 1;
-  els.phase.textContent = payload.current_phase ?? "-";
 
-  // 动态渲染全局资源
+  const g = extractGlobal(payload);
+
+  els.roundNumber.textContent = g.round ?? g.current_round ?? 1;
+  els.phase.textContent = g.phase ?? g.current_phase ?? "-";
+
+  // 动态渲染全局资源（数字和倍率字段）
   if (els.globalResourcesList) {
-    const SKIP_GLOBAL = new Set([
-      "game_id", "current_round", "max_rounds", "current_phase",
-      "current_player_id", "turn_order", "start_player_idx",
-      "active_effects", "action_log", "players",
-    ]);
-    const gs = payload.global_state || payload;
     const resParts = [];
-    for (const [key, val] of Object.entries(gs)) {
-      if (SKIP_GLOBAL.has(key)) continue;
+    for (const [key, val] of Object.entries(g)) {
+      if (GLOBAL_SKIP_KEYS.has(key)) continue;
+      if (key === "round" || key === "current_round" || key === "phase" || key === "current_phase") continue;
       if (typeof val === "number") {
         resParts.push(`<div><span>${key}</span><strong>${val}</strong></div>`);
       }
@@ -457,18 +643,11 @@ function renderState(payload) {
   } else {
     els.contextLength.textContent = "-";
   }
-  renderPlayers(payload.players, payload.current_player_id ?? payload.current_player);
-  renderViewerHand(payload.viewer_hand_items ?? []);
 
-  // 从 global_state 中提取所有数组字段作为公共区域
-  const zones = {};
-  const gs2 = payload.global_state || payload;
-  for (const [key, val] of Object.entries(gs2)) {
-    if (Array.isArray(val) && val.length && typeof val[0] === "object") {
-      zones[key] = val;
-    }
-  }
-  renderZones(zones);
+  const currentPlayer = g.current_player ?? g.current_player_id ?? null;
+  renderPlayers(payload.players, currentPlayer);
+  renderViewerHand(payload.viewer_hand_items ?? [], payload.viewer_player_data ?? null);
+  renderZones(payload.zones || [], g);
 }
 
 async function startGame() {

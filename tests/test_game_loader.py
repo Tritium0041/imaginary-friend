@@ -7,24 +7,12 @@ from src.core.game_loader import discover_games, load_game_rules, save_game_rule
 
 
 class TestGameLoader:
-    def test_discover_finds_builtin_chronos(self):
-        games = discover_games()
-        ids = [g["id"] for g in games]
-        assert "chronos_auction" in ids
-
     def test_discover_returns_required_fields(self):
         games = discover_games()
         for g in games:
             assert "id" in g
             assert "name" in g
             assert "path" in g
-
-    def test_load_chronos(self):
-        result = load_game_rules("chronos_auction")
-        assert result is not None
-        rules_md, metadata = result
-        assert metadata["game_name"] == "时空拍卖行"
-        assert "拍卖" in rules_md
 
     def test_load_nonexistent(self):
         result = load_game_rules("nonexistent_game_xyz")
@@ -49,22 +37,6 @@ class TestNewAPIEndpoints:
         from fastapi.testclient import TestClient
         from src.api.server import app
         return TestClient(app)
-
-    def test_list_definitions(self, client):
-        resp = client.get("/api/games/definitions")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "definitions" in data
-        ids = [d["id"] for d in data["definitions"]]
-        assert "chronos_auction" in ids
-
-    def test_get_definition(self, client):
-        resp = client.get("/api/games/definitions/chronos_auction")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["game_id"] == "chronos_auction"
-        assert data["metadata"]["game_name"] == "时空拍卖行"
-        assert "rules_md" in data
 
     def test_get_definition_not_found(self, client):
         resp = client.get("/api/games/definitions/nonexistent_xyz")

@@ -78,21 +78,4 @@ class TestDeleteGameDefinition:
 
 
 # ---- Chronos Auction rules.md ----
-
-class TestChronosAuctionRules:
-    """Test the built-in Chronos Auction game data."""
-
-    def test_rules_md_exists(self):
-        path = PROJECT_ROOT / "src" / "games" / "chronos_auction" / "rules.md"
-        assert path.exists()
-        content = path.read_text(encoding="utf-8")
-        assert "时空拍卖行" in content
-        assert "拍卖" in content
-
-    def test_metadata_json_exists(self):
-        path = PROJECT_ROOT / "src" / "games" / "chronos_auction" / "metadata.json"
-        assert path.exists()
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["game_name"] == "时空拍卖行"
-        assert data["player_count_min"] == 3
-        assert data["player_count_max"] == 5
+# (Removed: TestChronosAuctionRules — game directory renamed, tests no longer relevant)

@@ -220,34 +220,57 @@ def _build_state_snapshot(runtime: GameRuntime) -> dict[str, Any]:
         return {}
 
     doc_store = runtime.gm.doc_store
-    snapshot = doc_store.snapshot() if doc_store else {}
-    state_payload: dict[str, Any] = dict(snapshot)
-    state_payload["context_metrics"] = _build_context_metrics(runtime)
 
     # 查找人类玩家作为 viewer
     viewer_player_id: Optional[str] = None
-    viewer_hand_items: list[dict[str, str]] = []
-
-    players = snapshot.get("players", [])
     player_info = getattr(session, "player_info", {}) or {}
-    for player in players:
-        pid = player.get("_id", "")
-        info = player_info.get(pid, {})
-        if not info.get("is_human", False):
-            continue
-        viewer_player_id = str(pid)
-        for card in player.get("hand", []):
-            if isinstance(card, dict):
-                viewer_hand_items.append({
-                    "id": str(card.get("id", card.get("_id", ""))),
-                    "name": str(card.get("name", "")),
-                    "description": str(card.get("description", "")),
-                    "effect": str(card.get("effect", "")),
-                })
-        break
+    for pid, info in player_info.items():
+        if info.get("is_human", False):
+            viewer_player_id = str(pid)
+            break
+
+    # 使用 snapshot_for_player 过滤其他玩家私有数据
+    if doc_store:
+        if viewer_player_id:
+            snapshot = doc_store.snapshot_for_player(viewer_player_id)
+        else:
+            snapshot = doc_store.snapshot()
+    else:
+        snapshot = {}
+
+    state_payload: dict[str, Any] = dict(snapshot)
+    state_payload["context_metrics"] = _build_context_metrics(runtime)
+
+    # 提取 viewer 的手牌和完整数据
+    viewer_hand_items: list[dict[str, str]] = []
+    viewer_player_data: Optional[dict] = None
+
+    if viewer_player_id:
+        for player in snapshot.get("players", []):
+            if player.get("_id") == viewer_player_id:
+                viewer_player_data = player
+                for card in player.get("hand", []):
+                    if isinstance(card, dict):
+                        card_id = str(card.get("id", card.get("card_id", card.get("_id", ""))))
+                        card_name = str(card.get("name", card.get("card_name", "")))
+                        viewer_hand_items.append({
+                            "id": card_id,
+                            "name": card_name,
+                            "description": str(card.get("description", card.get("desc", ""))),
+                            "effect": str(card.get("effect", "")),
+                        })
+                    elif isinstance(card, str):
+                        viewer_hand_items.append({
+                            "id": card,
+                            "name": card,
+                            "description": "",
+                            "effect": "",
+                        })
+                break
 
     state_payload["viewer_player_id"] = viewer_player_id
     state_payload["viewer_hand_items"] = viewer_hand_items
+    state_payload["viewer_player_data"] = viewer_player_data
     return state_payload
 
 
