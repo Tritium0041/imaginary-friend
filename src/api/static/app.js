@@ -10,6 +10,7 @@ const state = {
   startupHideTimer: null,
   actionHideTimer: null,
   reconnectHideTimer: null,
+  gameMeta: null,
 };
 
 const els = {
@@ -30,15 +31,16 @@ const els = {
   connBadge: document.getElementById("conn-badge"),
   streamBadge: document.getElementById("stream-badge"),
   actionBadge: document.getElementById("action-badge"),
+  gameTitle: document.getElementById("game-title"),
+  gameDescription: document.getElementById("game-description"),
   roundNumber: document.getElementById("round-number"),
   phase: document.getElementById("phase"),
-  stability: null,
-  contextLength: document.getElementById("context-length"),
   globalResourcesList: document.getElementById("global-resources-list"),
   playersList: document.getElementById("players-list"),
   viewerHandCount: document.getElementById("viewer-hand-count"),
   viewerHandList: document.getElementById("viewer-hand-list"),
   zoneItems: document.getElementById("zone-items"),
+  apiStats: document.getElementById("api-stats"),
   startupProgressWrap: document.getElementById("startup-progress-wrap"),
   startupProgressLabel: document.getElementById("startup-progress-label"),
   startupProgressValue: document.getElementById("startup-progress-value"),
@@ -603,15 +605,69 @@ function renderZones(zonesDocs = [], globalDoc = {}) {
   container.appendChild(frag);
 }
 
+function renderGameHeader(payload) {
+  const meta = payload.game_meta || state.gameMeta || {};
+  if (meta.game_name || meta.description) {
+    state.gameMeta = meta;
+  }
+  const m = state.gameMeta || {};
+  if (els.gameTitle) {
+    els.gameTitle.textContent = m.game_name || "Board Game";
+  }
+  if (els.gameDescription) {
+    els.gameDescription.textContent = m.description || "";
+  }
+}
+
+function renderApiStats(metrics) {
+  if (!els.apiStats) return;
+  if (!metrics || typeof metrics !== "object") {
+    els.apiStats.innerHTML = '<div class="empty-card">暂无统计</div>';
+    return;
+  }
+
+  const apiReq = metrics.api_request_count ?? 0;
+  const apiIn = metrics.api_input_tokens ?? 0;
+  const apiOut = metrics.api_output_tokens ?? 0;
+  const apiTotal = metrics.api_total_tokens ?? 0;
+  const cacheCreate = metrics.api_cache_creation_input_tokens ?? 0;
+  const cacheRead = metrics.api_cache_read_input_tokens ?? 0;
+  const estTokens = metrics.estimated_tokens ?? 0;
+
+  const items = [
+    { label: "API 请求", value: apiReq },
+    { label: "总 Token", value: fmtNum(apiTotal) },
+    { label: "输入", value: fmtNum(apiIn) },
+    { label: "输出", value: fmtNum(apiOut) },
+    { label: "缓存写入", value: fmtNum(cacheCreate) },
+    { label: "缓存读取", value: fmtNum(cacheRead) },
+  ];
+  if (estTokens > 0) {
+    items.push({ label: "上下文", value: `≈${fmtNum(estTokens)}` });
+  }
+
+  els.apiStats.innerHTML = '<div class="stat-grid">' +
+    items.map(i => `<div class="stat-item"><span class="stat-label">${i.label}</span><span class="stat-value">${i.value}</span></div>`).join("") +
+    '</div>';
+}
+
+function fmtNum(n) {
+  if (!Number.isFinite(n) || n === 0) return "0";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
 function renderState(payload) {
   if (!payload || payload.error) return;
 
   const g = extractGlobal(payload);
 
+  renderGameHeader(payload);
+
   els.roundNumber.textContent = g.round ?? g.current_round ?? 1;
   els.phase.textContent = g.phase ?? g.current_phase ?? "-";
 
-  // 动态渲染全局资源（数字和倍率字段）
   if (els.globalResourcesList) {
     const resParts = [];
     for (const [key, val] of Object.entries(g)) {
@@ -624,25 +680,7 @@ function renderState(payload) {
     els.globalResourcesList.innerHTML = resParts.join("");
   }
 
-  const metrics = payload.context_metrics || {};
-  const apiTotalTokens = Number.isFinite(metrics.api_total_tokens) ? metrics.api_total_tokens : null;
-  const apiInputTokens = Number.isFinite(metrics.api_input_tokens) ? metrics.api_input_tokens : null;
-  const apiOutputTokens = Number.isFinite(metrics.api_output_tokens) ? metrics.api_output_tokens : null;
-  const apiRequestCount = Number.isFinite(metrics.api_request_count) ? metrics.api_request_count : 0;
-  const estTokens = Number.isFinite(metrics.estimated_tokens) ? metrics.estimated_tokens : null;
-
-  if (apiTotalTokens !== null && apiRequestCount > 0) {
-    const parts = [`${apiTotalTokens} tokens`];
-    if (apiInputTokens !== null && apiOutputTokens !== null) {
-      parts.push(`in ${apiInputTokens} · out ${apiOutputTokens}`);
-    }
-    parts.push(`${apiRequestCount} req`);
-    els.contextLength.textContent = parts.join(" · ");
-  } else if (estTokens !== null) {
-    els.contextLength.textContent = `≈${estTokens} tokens`;
-  } else {
-    els.contextLength.textContent = "-";
-  }
+  renderApiStats(payload.context_metrics || {});
 
   const currentPlayer = g.current_player ?? g.current_player_id ?? null;
   renderPlayers(payload.players, currentPlayer);
@@ -879,6 +917,18 @@ setConnectionBadge(false);
 hideProgress(progressTargets.create_game);
 hideProgress(progressTargets.action);
 hideProgress(progressTargets.reconnect);
+
+// 面板折叠/展开
+document.querySelectorAll(".panel-collapsible").forEach((header) => {
+  header.addEventListener("click", () => {
+    const targetId = header.getAttribute("data-target");
+    if (!targetId) return;
+    const target = document.getElementById(targetId);
+    if (!target) return;
+    const collapsed = target.classList.toggle("hidden");
+    header.classList.toggle("collapsed", collapsed);
+  });
+});
 
 // 加载可用的游戏定义列表
 async function loadGameDefinitions(selectValue) {

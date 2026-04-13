@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>通用桌游 Agent · 实时对局</title>
+  <link rel="stylesheet" href="/static/common.css" />
+  <link rel="stylesheet" href="/static/play.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <!-- ===== 顶部导航 ===== -->
+    <header class="topbar">
+      <div>
+        <h1>🎲 通用桌游 Agent</h1>
+        <p>Universal Board Game Agent · 实时 GM 面板</p>
+      </div>
+      <div class="status-row">
+        <a href="/manage" class="badge badge-link">📋 游戏管理</a>
+        <span id="conn-badge" class="badge badge-offline">未连接</span>
+        <span id="stream-badge" class="badge">流式空闲</span>
+      </div>
+    </header>
+
+    <!-- ===== 重连进度条 ===== -->
+    <div id="reconnect-progress-wrap" class="progress-wrap hidden progress-inline">
+      <div class="progress-meta">
+        <span id="reconnect-progress-label">正在连接实时通道...</span>
+        <span id="reconnect-progress-value">处理中</span>
+      </div>
+      <div class="progress-track">
+        <div id="reconnect-progress-bar" class="progress-bar indeterminate"></div>
+      </div>
+    </div>
+
+    <!-- ===== 设置面板（游戏开始前显示） ===== -->
+    <section id="setup-panel" class="panel">
+      <h2>🎮 开始新游戏</h2>
+      <div class="grid two-col">
+        <label>
+          <span>API Key *</span>
+          <input id="api-key" type="password" placeholder="sk-ant-..." />
+        </label>
+        <label>
+          <span>Base URL (可选)</span>
+          <input id="base-url" type="text" placeholder="https://api.anthropic.com" />
+        </label>
+        <label>
+          <span>模型</span>
+          <input id="model" type="text" value="claude-sonnet-4-20250514" />
+        </label>
+        <label>
+          <span>你的名字</span>
+          <input id="player-name" type="text" value="玩家" />
+        </label>
+        <label>
+          <span>AI 对手数量</span>
+          <select id="ai-count">
+            <option value="2">2 个 AI</option>
+            <option value="3">3 个 AI</option>
+            <option value="4">4 个 AI</option>
+          </select>
+        </label>
+        <label>
+          <span>游戏定义</span>
+          <select id="game-def">
+            <option value="">加载中...</option>
+          </select>
+        </label>
+      </div>
+      <button id="start-btn" class="btn-primary" style="margin-top: 14px;">开始游戏</button>
+      <div id="startup-progress-wrap" class="progress-wrap hidden">
+        <div class="progress-meta">
+          <span id="startup-progress-label">正在创建游戏...</span>
+          <span id="startup-progress-value">0%</span>
+        </div>
+        <div class="progress-track">
+          <div id="startup-progress-bar" class="progress-bar"></div>
+        </div>
+      </div>
+      <p id="setup-error" class="error-text hidden"></p>
+    </section>
+
+    <!-- ===== 游戏面板（游戏开始后显示） ===== -->
+    <section id="game-panel" class="hidden">
+
+      <!-- 游戏标题栏 -->
+      <div id="game-header-bar" class="game-header-bar">
+        <div class="game-header-info">
+          <h2 id="game-title" class="game-header-name">游戏进行中</h2>
+          <p id="game-description" class="game-header-desc"></p>
+        </div>
+        <div class="game-header-status">
+          <div class="turn-indicator">
+            <span class="turn-label">回合</span>
+            <span id="round-number" class="turn-value">1</span>
+          </div>
+          <div class="turn-indicator">
+            <span class="turn-label">阶段</span>
+            <span id="phase" class="turn-value">准备</span>
+          </div>
+          <span id="action-badge" class="badge">待命</span>
+        </div>
+      </div>
+
+      <!-- 三栏布局 -->
+      <div class="game-layout">
+
+        <!-- 左栏 -->
+        <aside class="sidebar-left">
+
+          <!-- 游戏总览 -->
+          <article class="panel panel-compact">
+            <div class="panel-header panel-collapsible" data-target="global-content">
+              <h3>📋 游戏总览</h3>
+              <span class="collapse-icon">▼</span>
+            </div>
+            <div id="global-content" class="panel-body">
+              <div id="global-resources-list" class="kv-list">
+                <div class="empty-card">等待游戏开始</div>
+              </div>
+            </div>
+          </article>
+
+          <!-- 玩家面板 -->
+          <article class="panel panel-compact">
+            <div class="panel-header panel-collapsible" data-target="players-content">
+              <h3>👥 玩家</h3>
+              <span class="collapse-icon">▼</span>
+            </div>
+            <div id="players-content" class="panel-body">
+              <div id="players-list" class="stack-list">
+                <div class="empty-card">暂无玩家数据</div>
+              </div>
+            </div>
+          </article>
+
+          <!-- API 统计 -->
+          <article class="panel panel-compact">
+            <div class="panel-header panel-collapsible" data-target="api-stats-content">
+              <h3>📊 API 统计</h3>
+              <span class="collapse-icon">▼</span>
+            </div>
+            <div id="api-stats-content" class="panel-body">
+              <div id="api-stats" class="stat-grid">
+                <div class="empty-card">等待游戏开始</div>
+              </div>
+            </div>
+          </article>
+
+        </aside>
+
+        <!-- 中栏 — GM 聊天 -->
+        <section class="main-center">
+          <article class="panel panel-chat">
+            <div class="panel-header">
+              <h3>💬 GM 实时播报</h3>
+            </div>
+            <div id="chat-box" class="chat-box"></div>
+            <div id="action-progress-wrap" class="progress-wrap hidden" style="padding: 0 14px;">
+              <div class="progress-meta">
+                <span id="action-progress-label">等待行动...</span>
+                <span id="action-progress-value">0%</span>
+              </div>
+              <div class="progress-track">
+                <div id="action-progress-bar" class="progress-bar"></div>
+              </div>
+            </div>
+            <form id="action-form" class="action-row">
+              <input id="action-input" type="text" placeholder="输入你的行动..." autocomplete="off" />
+              <button id="send-btn" class="btn-primary" type="submit">发送</button>
+            </form>
+          </article>
+        </section>
+
+        <!-- 右栏 — 我的背包 -->
+        <aside class="sidebar-right">
+          <article class="panel panel-compact">
+            <div class="panel-header panel-collapsible" data-target="inventory-content">
+              <h3>🎒 我的背包</h3>
+              <span id="viewer-hand-count" class="badge">0 件</span>
+            </div>
+            <div id="inventory-content" class="panel-body">
+              <div id="viewer-hand-list" class="hand-list">
+                <div class="hand-empty">暂无物品</div>
+              </div>
+            </div>
+          </article>
+        </aside>
+
+      </div>
+
+      <!-- 底部 — 公共区域 -->
+      <article class="panel panel-compact">
+        <div class="panel-header panel-collapsible" data-target="zones-content">
+          <h3>🌍 公共区域</h3>
+          <span class="collapse-icon">▼</span>
+        </div>
+        <div id="zones-content" class="panel-body">
+          <div id="zone-items" class="zone-grid">
+            <div class="empty-card">暂无公共物品</div>
+          </div>
+        </div>
+      </article>
+
+    </section>
+  </main>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

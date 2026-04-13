@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>游戏管理 · 通用桌游 Agent</title>
+  <link rel="stylesheet" href="/static/common.css" />
+  <link rel="stylesheet" href="/static/manage.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <!-- ===== 顶部导航 ===== -->
+    <header class="topbar">
+      <div>
+        <h1>📋 游戏管理</h1>
+        <p>管理已导入的桌游定义 · 上传新游戏</p>
+      </div>
+      <div class="status-row">
+        <a href="/play" class="badge badge-link">🎮 开始游戏</a>
+      </div>
+    </header>
+
+    <!-- ===== 导入新桌游 ===== -->
+    <section class="panel">
+      <h2>📄 导入新桌游</h2>
+      <div class="upload-form-row">
+        <label class="form-label-block">
+          <span>API Key（用于解析规则书）</span>
+          <input id="manage-api-key" type="password" placeholder="sk-ant-..." />
+        </label>
+      </div>
+      <div class="grid two-col upload-config-row">
+        <label class="form-label-block">
+          <span>Base URL（可选）</span>
+          <input id="manage-base-url" type="text" placeholder="https://api.anthropic.com" />
+        </label>
+        <label class="form-label-block">
+          <span>模型名称</span>
+          <input id="manage-model" type="text" value="claude-sonnet-4-20250514" />
+        </label>
+      </div>
+      <div id="manage-drop-zone" class="drop-zone">
+        <input id="manage-pdf-file" type="file" accept=".pdf,.docx,.md" hidden />
+        <div class="drop-zone-inner">
+          <span class="drop-icon">📁</span>
+          <p>将规则书拖拽到此处，或 <a id="manage-browse-link" href="#">点击选择文件</a></p>
+        </div>
+      </div>
+      <div id="manage-upload-file-info" class="upload-file-info hidden">
+        <span id="manage-upload-filename"></span>
+        <button id="manage-upload-btn" class="btn-primary btn-sm" type="button">上传并解析</button>
+        <button id="manage-upload-cancel-btn" class="btn-cancel btn-sm" type="button">取消</button>
+      </div>
+      <div id="manage-upload-progress-wrap" class="progress-wrap hidden">
+        <div class="progress-meta">
+          <span>正在解析规则书...</span>
+          <span>处理中</span>
+        </div>
+        <div class="progress-track">
+          <div id="manage-upload-progress-bar" class="progress-bar indeterminate"></div>
+        </div>
+      </div>
+      <p id="manage-upload-result" class="hidden"></p>
+    </section>
+
+    <!-- ===== 已有游戏列表 ===== -->
+    <section class="panel">
+      <h2>🎲 已有游戏</h2>
+      <div id="games-grid" class="games-grid">
+        <div class="loading-text">加载中...</div>
+      </div>
+    </section>
+
+    <!-- ===== 详情弹窗 ===== -->
+    <div id="detail-modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content panel">
+        <div class="modal-header">
+          <h2 id="detail-title">游戏详情</h2>
+          <button id="detail-close" class="btn-cancel btn-sm">✕</button>
+        </div>
+        <div id="detail-body" class="modal-body"></div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module" src="/static/manage.js"></script>
+</body>
+</html>

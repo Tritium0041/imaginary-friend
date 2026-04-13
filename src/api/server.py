@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -271,6 +271,14 @@ def _build_state_snapshot(runtime: GameRuntime) -> dict[str, Any]:
     state_payload["viewer_player_id"] = viewer_player_id
     state_payload["viewer_hand_items"] = viewer_hand_items
     state_payload["viewer_player_data"] = viewer_player_data
+
+    # 游戏元信息供前端标题栏使用
+    meta = getattr(runtime.gm, "metadata", None) or {}
+    state_payload["game_meta"] = {
+        "game_name": meta.get("game_name", getattr(runtime.gm, "game_name", "")),
+        "description": meta.get("description", ""),
+    }
+
     return state_payload
 
 
@@ -469,243 +477,8 @@ async def _run_gm_action(runtime: GameRuntime, action: str) -> dict[str, Any]:
     }
 
 
-def _build_html_page() -> str:
-    return """<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>通用桌游 Agent · 实时对局</title>
-  <link rel="stylesheet" href="/static/styles.css?v=3" />
-</head>
-<body>
-  <main class="app-shell">
-    <header class="topbar">
-      <div>
-        <h1>通用桌游 Agent</h1>
-        <p>Universal Board Game Agent · 实时 GM 面板</p>
-      </div>
-      <div class="status-row">
-        <a href="/manage" class="badge badge-link">📋 游戏管理</a>
-        <span id="conn-badge" class="badge badge-offline">未连接</span>
-        <span id="stream-badge" class="badge">流式空闲</span>
-      </div>
-    </header>
-    <div id="reconnect-progress-wrap" class="progress-wrap hidden progress-inline">
-      <div class="progress-meta">
-        <span id="reconnect-progress-label">正在连接实时通道...</span>
-        <span id="reconnect-progress-value">处理中</span>
-      </div>
-      <div class="progress-track">
-        <div id="reconnect-progress-bar" class="progress-bar indeterminate"></div>
-      </div>
-    </div>
-
-    <section id="setup-panel" class="panel">
-      <h2>开始新游戏</h2>
-      <div class="grid two-col">
-        <label>
-          <span>API Key *</span>
-          <input id="api-key" type="password" placeholder="sk-ant-..." />
-        </label>
-        <label>
-          <span>Base URL (可选)</span>
-          <input id="base-url" type="text" placeholder="https://api.anthropic.com" />
-        </label>
-        <label>
-          <span>模型</span>
-          <input id="model" type="text" value="claude-sonnet-4-20250514" />
-        </label>
-        <label>
-          <span>你的名字</span>
-          <input id="player-name" type="text" value="玩家" />
-        </label>
-        <label>
-          <span>AI 对手数量</span>
-          <select id="ai-count">
-            <option value="2">2 个 AI</option>
-            <option value="3">3 个 AI</option>
-            <option value="4">4 个 AI</option>
-          </select>
-        </label>
-        <label>
-          <span>游戏定义</span>
-          <select id="game-def">
-            <option value="">加载中...</option>
-          </select>
-        </label>
-      </div>
-      <button id="start-btn" class="btn-primary">开始游戏</button>
-      <div id="startup-progress-wrap" class="progress-wrap hidden">
-        <div class="progress-meta">
-          <span id="startup-progress-label">正在创建游戏...</span>
-          <span id="startup-progress-value">0%</span>
-        </div>
-        <div class="progress-track">
-          <div id="startup-progress-bar" class="progress-bar"></div>
-        </div>
-      </div>
-      <p id="setup-error" class="error-text hidden"></p>
-    </section>
-
-    <section id="game-panel" class="hidden">
-      <div class="grid game-grid">
-        <article class="panel">
-          <h2>全局状态</h2>
-          <div class="kv-list">
-            <div><span>回合</span><strong id="round-number">1</strong></div>
-            <div><span>阶段</span><strong id="phase">准备</strong></div>
-            <div id="global-resources-list"></div>
-            <div><span>上下文长度</span><strong id="context-length">-</strong></div>
-          </div>
-        </article>
-
-        <article class="panel">
-          <h2>玩家面板</h2>
-          <div id="players-list" class="stack-list"></div>
-        </article>
-      </div>
-
-      <article class="panel">
-        <div class="panel-title-row">
-          <h2>GM 实时播报</h2>
-          <span id="action-badge" class="badge">待命</span>
-        </div>
-        <div id="chat-box" class="chat-box"></div>
-        <div id="action-progress-wrap" class="progress-wrap hidden">
-          <div class="progress-meta">
-            <span id="action-progress-label">等待行动...</span>
-            <span id="action-progress-value">0%</span>
-          </div>
-          <div class="progress-track">
-            <div id="action-progress-bar" class="progress-bar"></div>
-          </div>
-        </div>
-        <form id="action-form" class="action-row">
-          <input id="action-input" type="text" placeholder="输入你的行动" />
-          <button id="send-btn" class="btn-primary" type="submit">发送</button>
-        </form>
-      </article>
-
-      <article class="panel">
-        <div class="panel-title-row">
-          <h2>我的物品</h2>
-          <span id="viewer-hand-count" class="badge">0 张</span>
-        </div>
-        <div id="viewer-hand-list" class="hand-list">
-          <div class="hand-empty">暂无物品</div>
-        </div>
-      </article>
-
-      <article class="panel">
-        <h2>公共区域</h2>
-        <div id="zone-items" class="zone-grid">
-          <div class="empty-card">暂无公共物品</div>
-        </div>
-      </article>
-    </section>
-  </main>
-
-  <script type="module" src="/static/app.js?v=3"></script>
-</body>
-</html>
-"""
-
 
 STATIC_DIR = Path(__file__).parent / "static"
-HTML_PAGE = _build_html_page()
-
-
-def _build_manage_page() -> str:
-    return """<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>游戏管理 · 通用桌游 Agent</title>
-  <link rel="stylesheet" href="/static/styles.css?v=3" />
-  <link rel="stylesheet" href="/static/manage.css?v=3" />
-</head>
-<body>
-  <main class="app-shell">
-    <header class="topbar">
-      <div>
-        <h1>游戏管理</h1>
-        <p>管理已导入的桌游定义 · 上传新游戏</p>
-      </div>
-      <div class="status-row">
-        <a href="/play" class="badge badge-link">🎮 开始游戏</a>
-      </div>
-    </header>
-
-    <section class="panel upload-panel">
-      <h2>📄 导入新桌游</h2>
-      <div class="upload-form-row">
-        <label class="upload-api-key-label">
-          <span>API Key（用于解析规则书）</span>
-          <input id="manage-api-key" type="password" placeholder="sk-ant-..." />
-        </label>
-      </div>
-      <div class="upload-form-row two-col-form">
-        <label class="upload-api-key-label">
-          <span>Base URL（可选）</span>
-          <input id="manage-base-url" type="text" placeholder="https://api.anthropic.com" />
-        </label>
-        <label class="upload-api-key-label">
-          <span>模型名称</span>
-          <input id="manage-model" type="text" value="claude-sonnet-4-20250514" />
-        </label>
-      </div>
-      <div id="manage-drop-zone" class="drop-zone">
-        <input id="manage-pdf-file" type="file" accept=".pdf,.docx,.md" hidden />
-        <div class="drop-zone-inner">
-          <span class="drop-icon">📁</span>
-          <p>将规则书拖拽到此处，或 <a id="manage-browse-link" href="#">点击选择文件</a></p>
-        </div>
-      </div>
-      <div id="manage-upload-file-info" class="upload-file-info hidden">
-        <span id="manage-upload-filename"></span>
-        <button id="manage-upload-btn" class="btn-primary btn-sm" type="button">上传并解析</button>
-        <button id="manage-upload-cancel-btn" class="btn-cancel btn-sm" type="button">取消</button>
-      </div>
-      <div id="manage-upload-progress-wrap" class="progress-wrap hidden">
-        <div class="progress-meta">
-          <span>正在解析规则书...</span>
-          <span>处理中</span>
-        </div>
-        <div class="progress-track">
-          <div id="manage-upload-progress-bar" class="progress-bar indeterminate"></div>
-        </div>
-      </div>
-      <p id="manage-upload-result" class="hidden"></p>
-    </section>
-
-    <section class="panel">
-      <h2>🎲 已有游戏</h2>
-      <div id="games-grid" class="games-grid">
-        <div class="loading-text">加载中...</div>
-      </div>
-    </section>
-
-    <div id="detail-modal" class="modal hidden">
-      <div class="modal-backdrop"></div>
-      <div class="modal-content panel">
-        <div class="modal-header">
-          <h2 id="detail-title">游戏详情</h2>
-          <button id="detail-close" class="btn-cancel btn-sm">✕</button>
-        </div>
-        <div id="detail-body" class="modal-body"></div>
-      </div>
-    </div>
-  </main>
-
-  <script type="module" src="/static/manage.js?v=3"></script>
-</body>
-</html>
-"""
-
-
-MANAGE_PAGE = _build_manage_page()
 
 
 @asynccontextmanager
@@ -1068,11 +841,11 @@ async def websocket_endpoint(websocket: WebSocket, game_id: str):
         await manager.disconnect(game_id, websocket)
 
 
-@app.get("/play", response_class=HTMLResponse)
+@app.get("/play")
 async def play_page():
-    return HTML_PAGE
+    return FileResponse(STATIC_DIR / "play.html", media_type="text/html")
 
 
-@app.get("/manage", response_class=HTMLResponse)
+@app.get("/manage")
 async def manage_page():
-    return MANAGE_PAGE
+    return FileResponse(STATIC_DIR / "manage.html", media_type="text/html")
