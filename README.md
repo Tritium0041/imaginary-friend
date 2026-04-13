@@ -9,7 +9,8 @@
 - 🗄️ **TinyDB 文档存储** — 灵活的 JSON 文档型状态管理，支持任意桌游数据结构
 - 🔧 **6 个固定工具** — GM 通过 CRUD + 交互工具自主管理游戏状态
 - ⚡ **Prompt Caching** — 静态规则书缓存，降低 API 成本
-- 🏛️ **内置示例游戏** — 《时空拍卖行》(Chronos Auction House)
+- 🎨 **前后端分离** — 纯静态前端 + FastAPI 后端，三栏式游戏界面
+- 🏛️ **内置示例游戏** — 上传规则书即可创建新游戏
 - 🎮 单人对战 2-4 个 AI 对手
 - 🤖 GM Agent 由 Claude 大语言模型驱动
 - 💬 自然语言交互
@@ -59,16 +60,25 @@ board_game_agent/
 │   │   ├── document_parser.py # 多格式统一入口
 │   │   ├── rule_cleaner.py    # LLM 清洗 + 元数据提取
 │   │   └── cache_manager.py   # 两级缓存管理
-│   ├── games/             # 游戏实例
-│   │   └── chronos_auction/   # 内置示例游戏
+│   ├── games/             # 游戏实例（上传的游戏存储于此）
+│   │   └── {game_id}/
 │   │       ├── rules.md       # 完整 Markdown 规则手册
 │   │       └── metadata.json  # 极简元数据
 │   ├── agents/            # Agent 实现
 │   │   └── gm_agent.py       # GM Agent (Prompt Caching)
 │   └── api/               # Web API
-│       └── server.py         # FastAPI 服务
+│       ├── server.py          # FastAPI 后端
+│       └── static/            # 前端静态资源
+│           ├── common.css     # 共享基础样式
+│           ├── play.html      # 游戏页面（三栏布局）
+│           ├── play.css       # 游戏页面样式
+│           ├── app.js         # 游戏页面逻辑
+│           ├── manage.html    # 管理页面
+│           ├── manage.css     # 管理页面样式
+│           └── manage.js      # 管理页面逻辑
 ├── cache/                 # 缓存目录
 ├── tests/                 # 测试
+│   └── mock_server/       # 前端可视化测试用 Mock 服务器
 ├── docs/                  # 设计文档
 ├── main.py                # 命令行入口
 ├── run_server.py          # Web 服务入口
