@@ -7,14 +7,14 @@ from src.core.doc_store import DocStore
 
 
 class TestToolSchemas:
-    def test_has_six_tools(self):
-        assert len(TOOL_SCHEMAS) == 6
+    def test_has_seven_tools(self):
+        assert len(TOOL_SCHEMAS) == 7
 
     def test_tool_names(self):
         names = {t["name"] for t in TOOL_SCHEMAS}
         assert names == {
             "db_find", "db_insert", "db_update", "db_delete",
-            "request_player_action", "broadcast_message",
+            "db_shuffle", "request_player_action", "broadcast_message",
         }
 
     def test_each_has_required_fields(self):
@@ -96,3 +96,57 @@ class TestToolExecutor:
     def test_unknown_tool(self, executor):
         result = executor.execute("nonexistent_tool", {})
         assert "error" in result
+
+    def test_db_shuffle_basic(self, executor):
+        executor.execute("db_insert", {
+            "table": "zones",
+            "document": {"_id": "deck", "cards": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]},
+        })
+        result = executor.execute("db_shuffle", {
+            "table": "zones",
+            "query": {"_id": "deck"},
+            "field": "cards",
+        })
+        assert result["matched"] == 1
+        assert result["shuffled"] == 1
+        found = executor.execute("db_find", {
+            "table": "zones",
+            "query": {"_id": "deck"},
+        })
+        cards = found["results"][0]["cards"]
+        assert sorted(cards) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+    def test_db_shuffle_no_match(self, executor):
+        result = executor.execute("db_shuffle", {
+            "table": "zones",
+            "query": {"_id": "nonexistent"},
+            "field": "cards",
+        })
+        assert result["matched"] == 0
+        assert result["shuffled"] == 0
+
+    def test_db_shuffle_field_not_array(self, executor):
+        executor.execute("db_insert", {
+            "table": "zones",
+            "document": {"_id": "board", "size": 10},
+        })
+        result = executor.execute("db_shuffle", {
+            "table": "zones",
+            "query": {"_id": "board"},
+            "field": "size",
+        })
+        assert result["matched"] == 1
+        assert result["shuffled"] == 0
+
+    def test_db_shuffle_field_missing(self, executor):
+        executor.execute("db_insert", {
+            "table": "zones",
+            "document": {"_id": "empty_zone"},
+        })
+        result = executor.execute("db_shuffle", {
+            "table": "zones",
+            "query": {"_id": "empty_zone"},
+            "field": "cards",
+        })
+        assert result["matched"] == 1
+        assert result["shuffled"] == 0

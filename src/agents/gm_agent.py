@@ -2,7 +2,7 @@
 GM Agent 实现 - 游戏主控
 负责流程推进、规则裁定、状态管理
 
-新架构: DocStore(TinyDB) + 6 固定工具 + Markdown 规则注入 + Prompt Caching
+新架构: DocStore(TinyDB) + 7 固定工具 + Markdown 规则注入 + Prompt Caching
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ _GM_SYSTEM_INSTRUCTIONS = """\
 
 # 工具使用规范
 
-你只有 6 个工具可以使用：
+你只有 7 个工具可以使用：
 
 ## 数据库操作工具
 - **db_find**: 查询游戏状态。始终先查询再修改。
@@ -58,6 +58,8 @@ _GM_SYSTEM_INSTRUCTIONS = """\
   - `$pull`: 数组移除 → `{"$pull": {"hand": {"name": "Card A"}}}`
   - 可组合多个操作符 → `{"$inc": {"gold": -3}, "$push": {"items": {"name": "X"}}}`
 - **db_delete**: 删除文档（谨慎使用）。
+- **db_shuffle**: 随机打乱指定文档中某个数组字段的元素顺序。用于洗牌、随机化顺序等。
+  - 示例: `db_shuffle(table="zones", query={"_id": "deck"}, field="cards")`
 
 ## 数据库表结构
 - **global**: 全局状态（回合数、阶段、公共资源池等）。建议用 `_id: "global_state"` 的单文档。

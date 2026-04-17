@@ -2,12 +2,13 @@
 DocStore — 基于 TinyDB 的文档数据库封装
 
 提供 4 个固定表（global, players, zones, logs）和 MongoDB 风格的更新操作符。
-GM Agent 通过 6 个固定工具操作此存储层。
+GM Agent 通过 7 个固定工具操作此存储层。
 """
 from __future__ import annotations
 
 import copy
 import logging
+import random
 from typing import Any
 
 from tinydb import TinyDB, Query, where
@@ -86,6 +87,27 @@ class DocStore:
         doc_ids = [d.doc_id for d in matched]
         tbl.remove(doc_ids=doc_ids)
         return {"deleted": len(doc_ids)}
+
+    def shuffle_field(self, table: str, query: dict, field: str) -> dict:
+        """随机打乱匹配文档中指定数组字段的元素顺序。返回 {"matched": n, "shuffled": n}。"""
+        tbl = self._get_table(table)
+        cond = self._build_condition(query)
+        matched_docs = tbl.search(cond)
+
+        if not matched_docs:
+            return {"matched": 0, "shuffled": 0}
+
+        shuffled = 0
+        for doc in matched_docs:
+            value = doc.get(field)
+            if not isinstance(value, list):
+                continue
+            shuffled_list = list(value)
+            random.shuffle(shuffled_list)
+            tbl.update({field: shuffled_list}, doc_ids=[doc.doc_id])
+            shuffled += 1
+
+        return {"matched": len(matched_docs), "shuffled": shuffled}
 
     def snapshot(self) -> dict:
         """返回完整数据库快照（JSON 可序列化）。"""

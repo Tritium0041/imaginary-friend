@@ -1,8 +1,8 @@
 """
-Tools — 6 个固定工具的 Schema 定义与执行逻辑。
+Tools — 7 个固定工具的 Schema 定义与执行逻辑。
 
 替代旧的 ToolGenerator 动态工具生成。
-GM Agent 仅通过这 6 个工具与游戏状态交互。
+GM Agent 仅通过这 7 个工具与游戏状态交互。
 """
 from __future__ import annotations
 
@@ -117,6 +117,33 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "db_shuffle",
+        "description": (
+            "随机打乱指定文档中某个数组字段的元素顺序。"
+            "常用于洗牌、随机化拍品顺序等场景。"
+            "可用的表: global, players, zones, logs。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "table": {
+                    "type": "string",
+                    "enum": ["global", "players", "zones", "logs"],
+                    "description": "要操作的表名",
+                },
+                "query": {
+                    "type": "object",
+                    "description": "匹配条件，指定要操作哪些文档",
+                },
+                "field": {
+                    "type": "string",
+                    "description": "要随机打乱的数组字段名",
+                },
+            },
+            "required": ["table", "query", "field"],
+        },
+    },
+    {
         "name": "request_player_action",
         "description": (
             "向指定玩家请求行动输入。调用后 GM 线程将挂起，等待玩家回复。"
@@ -157,7 +184,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 
 def get_tool_schemas() -> list[dict[str, Any]]:
-    """返回 6 个固定工具的 Schema（用于 Anthropic API tools 参数）。"""
+    """返回 7 个固定工具的 Schema（用于 Anthropic API tools 参数）。"""
     return TOOL_SCHEMAS
 
 
@@ -204,6 +231,13 @@ class ToolExecutor:
         table = params["table"]
         query = params["query"]
         result = self._store.delete(table, query)
+        return result
+
+    def _handle_db_shuffle(self, params: dict) -> dict:
+        table = params["table"]
+        query = params["query"]
+        field = params["field"]
+        result = self._store.shuffle_field(table, query, field)
         return result
 
     def _handle_request_player_action(self, params: dict) -> dict:
